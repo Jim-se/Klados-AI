@@ -2,7 +2,8 @@ import React, { memo } from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
 import { ChatNode } from '../types';
 
-interface NodeCardData extends ChatNode {
+interface NodeCardData {
+  id: string;
   onBranch: (id: string) => void;
   scale?: number;
 }
@@ -53,8 +54,17 @@ const extractHeadings = (messages: { content: string }[]): { text: string; depth
   return headings;
 };
 
+import { useNodeData } from '../src/contexts/NodeDataContext';
+
 export const NodeCard = memo(({ data, selected }: NodeProps<NodeCardData>) => {
-  const { title, id, onBranch, scale = 1, messages, hierarchicalID } = data;
+  const { id, onBranch, scale = 1 } = data;
+  const nodes = useNodeData();
+  const nodeData = nodes[id];
+
+  const title = nodeData?.title || '';
+  const messages = nodeData?.messages || [];
+  const hierarchicalID = nodeData?.hierarchicalID || '';
+
   const firstMessage = messages[0]?.content || '';
 
   const rawTitle = title && title !== '...'
@@ -130,7 +140,7 @@ export const NodeCard = memo(({ data, selected }: NodeProps<NodeCardData>) => {
               <div
                 key={i}
                 className="flex items-baseline gap-2"
-                
+
               >
                 {/* Prefix: number if numbered, dot otherwise */}
                 {h.number != null ? (
@@ -146,7 +156,7 @@ export const NodeCard = memo(({ data, selected }: NodeProps<NodeCardData>) => {
               </div>
             );
           })}
-          
+
         </div>
       )}
     </div>

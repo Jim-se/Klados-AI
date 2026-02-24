@@ -1,10 +1,9 @@
-
 import React, { useMemo, useEffect } from 'react';
-import ReactFlow, { 
-  Background, 
-  Controls, 
-  MiniMap, 
-  Node, 
+import ReactFlow, {
+  Background,
+  Controls,
+  MiniMap,
+  Node,
   Edge,
   MarkerType,
   useReactFlow,
@@ -13,6 +12,7 @@ import ReactFlow, {
 } from 'reactflow';
 import { ChatNode } from '../types';
 import { NodeCard } from './NodeCard';
+import { NodeDataContext } from '../src/contexts/NodeDataContext';
 
 interface NodeViewProps {
   nodes: Record<string, ChatNode>;
@@ -25,9 +25,9 @@ interface NodeViewProps {
 
 
 
-const CameraController: React.FC<{ currentNodeId: string | null; viewMode: 'chat' | 'node' }> = ({ 
-  currentNodeId, 
-  viewMode 
+const CameraController: React.FC<{ currentNodeId: string | null; viewMode: 'chat' | 'node' }> = ({
+  currentNodeId,
+  viewMode
 }) => {
   const { fitView, setCenter, getNode } = useReactFlow();
 
@@ -38,11 +38,11 @@ const CameraController: React.FC<{ currentNodeId: string | null; viewMode: 'chat
         // Shift camera slightly based on scale to keep node well-framed
         const targetX = node.position.x + 120;
         const targetY = node.position.y + 60;
-        
+
         setCenter(targetX, targetY, { zoom: 1.1, duration: 1200 });
       }
     } else if (viewMode === 'node') {
-      fitView({ duration: 800, padding: 0.3 });
+      fitView({ duration: 0, padding: 0.3 });
     }
   }, [viewMode, currentNodeId, setCenter, fitView, getNode]);
 
@@ -53,30 +53,44 @@ export const NodeView: React.FC<NodeViewProps> = (props) => {
   // ADD THIS HERE:
   const nodeTypes = useMemo(() => ({
     chatNode: NodeCard,
-  }), []); 
+  }), []);
 
 
   const { nodes, rootNodeId, currentNodeId, viewMode, onSelectNode, onBranchNode } = props;
 
+  // Derive a topology dependency string that uniquely identifies the SHAPE of the graph
+  // This prevents Reactflow from recalculating when only text inside the nodes changes
+  const topologyDeps = useMemo(() => {
+    if (!rootNodeId || !nodes[rootNodeId]) return '';
+    const shape: string[] = [];
+    const traverse = (id: string) => {
+      const n = nodes[id];
+      if (!n) return;
+      shape.push(`${id}:${n.childrenIds.join(',')}`);
+      n.childrenIds.forEach(traverse);
+    };
+    traverse(rootNodeId);
+    return `${rootNodeId}|${currentNodeId}|${shape.join('|')}`;
+  }, [nodes, rootNodeId, currentNodeId]);
+
   const { flowNodes, flowEdges } = useMemo(() => {
-    console.log('🔍 NodeView recalculating', { 
-  rootNodeId, 
-  hasRootInNodes: !!nodes[rootNodeId],
-  nodesKeys: Object.keys(nodes),
-  timestamp: Date.now()
-});
-  if (!rootNodeId) {
-    console.warn('NodeView: rootNodeId is null');
-    return { flowNodes: [], flowEdges: [] };
-  }
-  
-  if (!nodes[rootNodeId]) {
-    console.error('NodeView: root node not found in nodes!', rootNodeId, 'Available:', Object.keys(nodes));
-    return { flowNodes: [], flowEdges: [] };
-  }
+    console.log('🔍 NodeView recalculating topology', {
+      rootNodeId,
+      hasRootInNodes: !!nodes[rootNodeId],
+      timestamp: Date.now()
+    });
+    if (!rootNodeId) {
+      console.warn('NodeView: rootNodeId is null');
+      return { flowNodes: [], flowEdges: [] };
+    }
+
+    if (!nodes[rootNodeId]) {
+      console.error('NodeView: root node not found in nodes!', rootNodeId, 'Available:', Object.keys(nodes));
+      return { flowNodes: [], flowEdges: [] };
+    }
     const flowNodes: Node[] = [];
     const flowEdges: Edge[] = [];
-    
+
     const BASE_HORIZONTAL_SPACING = 380;
     const BASE_VERTICAL_SPACING = 180;
 
@@ -89,12 +103,12 @@ export const NodeView: React.FC<NodeViewProps> = (props) => {
         nodeSubtreeHeights[id] = BASE_VERTICAL_SPACING;
         return BASE_VERTICAL_SPACING;
       }
-      
+
       let totalHeight = 0;
       node.childrenIds.forEach(childId => {
         totalHeight += calculateSubtreeHeight(childId);
       });
-      
+
       const height = Math.max(BASE_VERTICAL_SPACING, totalHeight);
       nodeSubtreeHeights[id] = height;
       return height;
@@ -121,8 +135,14 @@ export const NodeView: React.FC<NodeViewProps> = (props) => {
         id: node.id,
         type: 'chatNode',
         position: { x, y },
-        // ADDED onSelect here so the card can trigger navigation
-        data: { ...node, onBranch: onBranchNode, onSelect: onSelectNode, scale },
+        // PASS ONLY NON-VOLATILE DATA to prevent full re-renders
+        // Content will be fetched from NodeDataContext directly by NodeCard 
+        data: {
+          id: node.id,
+          onBranch: onBranchNode,
+          onSelect: onSelectNode,
+          scale
+        },
         selected: node.id === currentNodeId,
       });
 
@@ -131,7 +151,7 @@ export const NodeView: React.FC<NodeViewProps> = (props) => {
       node.childrenIds.forEach((childId) => {
         const childHeight = nodeSubtreeHeights[childId];
         const nextY = currentY + (childHeight / 2) - (BASE_VERTICAL_SPACING / 2);
-        
+
         // We adjust horizontal spacing slightly for deeper nodes to keep the tree compact
         const childDepth = depth + 1;
         const spacingAdjustment = Math.max(0.7, Math.pow(0.95, depth));
@@ -143,14 +163,14 @@ export const NodeView: React.FC<NodeViewProps> = (props) => {
           target: childId,
           type: 'step',
           animated: childId === currentNodeId,
-          style: { 
-            stroke: childId === currentNodeId ? '#3b82f6' : 'rgba(255,255,255,0.06)', 
+          style: {
+            stroke: childId === currentNodeId ? '#3b82f6' : 'rgba(255,255,255,0.06)',
             strokeWidth: 2 * scale, // Lines get thinner as tree gets deeper
             opacity: childId === currentNodeId ? 1 : 0.5
           },
-          markerEnd: { 
-            type: MarkerType.ArrowClosed, 
-            color: childId === currentNodeId ? '#3b82f6' : '#27272a' 
+          markerEnd: {
+            type: MarkerType.ArrowClosed,
+            color: childId === currentNodeId ? '#3b82f6' : '#27272a'
           }
         });
 
@@ -162,39 +182,41 @@ export const NodeView: React.FC<NodeViewProps> = (props) => {
     layout(rootNodeId, 0, 0);
 
     return { flowNodes, flowEdges };
-  }, [nodes, rootNodeId, currentNodeId, onBranchNode]);
+  }, [topologyDeps, onBranchNode, onSelectNode]);
 
   if (!rootNodeId) return null;
 
   return (
     <div className="h-full w-full bg-[#020203] relative">
-      <ReactFlowProvider>
-        <ReactFlow
-          nodes={flowNodes}
-          edges={flowEdges}
-          nodeTypes={nodeTypes}
-          onNodeClick={(_, node) => onSelectNode(node.id)}
-          minZoom={0.5}
-          maxZoom={2}
-          zoomOnScroll={viewMode === 'node'}
-          panOnDrag={viewMode === 'node'}
-        >
-          <Background 
-            variant={BackgroundVariant.Dots}
-            color="#9b9b9b" 
-            gap={20} 
-            size={1} 
-            className=""
-          />
-          <Controls position="bottom-right" className="bg-zinc-900 border-zinc-800 shadow-2xl" />
-          <MiniMap 
-            nodeColor={(n) => (n.selected ? '#3b82f6' : '#18181b')}
-            maskColor="rgba(0, 0, 0, 0.9)" 
-            style={{ backgroundColor: '#020203', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '16px' }}
-          />
-          <CameraController currentNodeId={currentNodeId} viewMode={viewMode} />
-        </ReactFlow>
-      </ReactFlowProvider>
+      <NodeDataContext.Provider value={nodes}>
+        <ReactFlowProvider>
+          <ReactFlow
+            nodes={flowNodes}
+            edges={flowEdges}
+            nodeTypes={nodeTypes}
+            onNodeClick={(_, node) => onSelectNode(node.id)}
+            minZoom={0.5}
+            maxZoom={2}
+            zoomOnScroll={viewMode === 'node'}
+            panOnDrag={viewMode === 'node'}
+          >
+            <Background
+              variant={BackgroundVariant.Dots}
+              color="#9b9b9b"
+              gap={20}
+              size={1}
+              className=""
+            />
+            <Controls position="bottom-right" className="bg-zinc-900 border-zinc-800 shadow-2xl" />
+            <MiniMap
+              nodeColor={(n) => (n.selected ? '#3b82f6' : '#18181b')}
+              maskColor="rgba(0, 0, 0, 0.9)"
+              style={{ backgroundColor: '#020203', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '16px' }}
+            />
+            <CameraController currentNodeId={currentNodeId} viewMode={viewMode} />
+          </ReactFlow>
+        </ReactFlowProvider>
+      </NodeDataContext.Provider>
     </div>
   );
 };

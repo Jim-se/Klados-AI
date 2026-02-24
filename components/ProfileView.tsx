@@ -1,17 +1,27 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { goPro, handleLogout } from '../App.tsx';
+import { supabase } from '../services/supabaseClient';
+
+export const goPro = () => {
+  window.location.href = "https://buy.stripe.com/test_00wcN5bYu8Ky3TH0qLgA800";
+};
+
+export const handleLogout = async () => {
+  if (confirm("Are you sure you want to log out?")) {
+    await supabase.auth.signOut();
+  }
+};
 
 interface ProfileViewProps {
   fullName: string | null;
-  email: string | null; 
+  email: string | null;
   createdAt: string | null;
   onBack: () => void;
 }
 
 export const ProfileView: React.FC<ProfileViewProps> = ({ fullName, email, createdAt }) => {
   const navigate = useNavigate();
-  
+
   return (
     <div className="w-full h-screen bg-black flex items-center justify-center">
       <div className="w-full max-w-2xl px-8">
@@ -66,11 +76,11 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ fullName, email, creat
           {/* Actions */}
           <div className="flex gap-4 pt-4 border-t border-zinc-800">
             <button onClick={goPro}
-            className="flex-1 py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition-colors">
+              className="flex-1 py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition-colors">
               Upgrade to Pro
             </button>
-            <button  onClick={handleLogout}
-            className="flex-1 py-3 px-4 bg-red-600/10 hover:bg-red-600/20 text-red-400 font-semibold rounded-xl transition-colors border border-red-600/30">
+            <button onClick={handleLogout}
+              className="flex-1 py-3 px-4 bg-red-600/10 hover:bg-red-600/20 text-red-400 font-semibold rounded-xl transition-colors border border-red-600/30">
               Log Out
             </button>
           </div>

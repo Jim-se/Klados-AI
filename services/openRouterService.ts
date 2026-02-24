@@ -76,19 +76,19 @@ export const generateResponse = async (
       content: userContent
     });
 
-    // 3. Initiate Stream
-    // ✅ FIX: The OpenRouter SDK requires params nested under `chatGenerationParams`
-    const stream = await client.chat.send({
-      chatGenerationParams: {
-        model: modelId,
-        messages: messages,
-        stream: true,
-      }
+    // 3. Initiate Stream via OpenRouter callModel
+    const result = client.callModel({
+      model: modelId,
+      input: messages
     });
 
-    return stream;
+    return result;
 
   } catch (error: any) {
+    if (error.name === 'AbortError' || error.message?.includes('Cancel')) {
+      console.log('Stream aborted natively in service.');
+      throw error;
+    }
     console.error("❌ OpenRouter API Error:", error);
     throw error;
   }
@@ -97,8 +97,8 @@ export const generateResponse = async (
 // Inside openRouterService.ts
 
 export const generateTitle = async (
-  userMessage: string, 
-  aiResponse: string, 
+  userMessage: string,
+  aiResponse: string,
   modelName: string // Argument accepted.
 ) => {
   try {
@@ -108,11 +108,11 @@ export const generateTitle = async (
         // IMPORTANT: Ensure your .env has VITE_OPENROUTER_API_KEY
         "Authorization": `Bearer ${import.meta.env.VITE_OPENROUTER_API_KEY}`,
         "Content-Type": "application/json",
-        "HTTP-Referer": window.location.origin, 
+        "HTTP-Referer": window.location.origin,
         "X-Title": "LLM-Brancher",
       },
       body: JSON.stringify({
-        model: modelName, 
+        model: modelName,
         messages: [
           {
             role: "system",
@@ -141,6 +141,6 @@ export const generateTitle = async (
 
   } catch (error) {
     console.error("Title generation failed:", error);
-    return "New Discussion"; 
+    return "New Discussion";
   }
 };

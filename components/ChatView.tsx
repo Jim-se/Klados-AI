@@ -5,7 +5,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
 interface ChatViewProps {
-  history: ChatNode[]; 
+  history: ChatNode[];
   onSendMessage: (text: string, files: File[], branchMetadata?: BranchMetadata) => void;
   onSendMessageToNode?: (nodeId: string, text: string, files: File[]) => void;
   onSelectNode?: (nodeId: string) => void;
@@ -20,6 +20,7 @@ interface ChatViewProps {
   currentTitle?: string;
   selectedModel: string;
   onModelSelect: (modelId: string) => void;
+  onStopGeneration?: () => void;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -27,7 +28,7 @@ interface ChatViewProps {
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface GhostLabelProps {
-  x: number; 
+  x: number;
   y: number;
 }
 
@@ -50,151 +51,151 @@ const BranchGhostLabel: React.FC<{ x: number; y: number }> = ({ x, y }) => (
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface BranchComposerProps {
-  anchorY: number;
-  onSend: (text: string, files: File[]) => void;
-  onClose: () => void;
-  selectedModel: string;
-  onModelSelect: (modelId: string) => void;
+  anchorY: number;
+  onSend: (text: string, files: File[]) => void;
+  onClose: () => void;
+  selectedModel: string;
+  onModelSelect: (modelId: string) => void;
 }
 
 const BranchComposer: React.FC<BranchComposerProps & { composerRef: React.RefObject<HTMLDivElement> }> = ({ anchorY, onSend, onClose, selectedModel, onModelSelect, composerRef }) => {
-  const [text, setText] = useState('');
-  const [isExpanded, setIsExpanded] = useState(false);
-  const [files, setFiles] = useState<File[]>([]);
-  const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [text, setText] = useState('');
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [files, setFiles] = useState<File[]>([]);
+  const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => { inputRef.current?.focus(); }, []);
+  useEffect(() => { inputRef.current?.focus(); }, []);
 
-  const handleSend = useCallback(() => {
-    if (text.trim() || files.length > 0) {
-      onSend(text.trim(), files);
-    }
-  }, [text, files, onSend]);
+  const handleSend = useCallback(() => {
+    if (text.trim() || files.length > 0) {
+      onSend(text.trim(), files);
+    }
+  }, [text, files, onSend]);
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      setFiles((prev) => [...prev, ...Array.from(e.target.files!)]);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
-  };
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      setFiles((prev) => [...prev, ...Array.from(e.target.files!)]);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
 
-  const removeFile = (index: number) => {
-    setFiles((prev) => prev.filter((_, i) => i !== index));
-  };
+  const removeFile = (index: number) => {
+    setFiles((prev) => prev.filter((_, i) => i !== index));
+  };
 
-  const currentModel = MODELS.find(m => m.id === selectedModel);
+  const currentModel = MODELS.find(m => m.id === selectedModel);
 
-  return (
-    <div
-      ref={composerRef}
-      className="branch-composer-ui absolute z-[60] bg-zinc-900 border border-zinc-700/80 rounded-xl shadow-2xl shadow-black/60 flex flex-col p-1.5 animate-in fade-in zoom-in-95 duration-150 transition-all"
-      style={{
-        top: anchorY - 24,
-        left: 'calc(50% + 384px + 12px)',
-        width: 300,
-      }}
-      onMouseDown={(e) => e.stopPropagation()}
-    >
-      <input type="file" multiple ref={fileInputRef} className="hidden" onChange={handleFileSelect} />
+  return (
+    <div
+      ref={composerRef}
+      className="branch-composer-ui absolute z-[60] bg-zinc-900 border border-zinc-700/80 rounded-xl shadow-2xl shadow-black/60 flex flex-col p-1.5 animate-in fade-in zoom-in-95 duration-150 transition-all"
+      style={{
+        top: anchorY - 24,
+        left: 'calc(50% + 384px + 12px)',
+        width: 300,
+      }}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <input type="file" multiple ref={fileInputRef} className="hidden" onChange={handleFileSelect} />
 
-      {/* File Previews */}
-      {files.length > 0 && (
-        <div className="flex gap-2 pb-2 px-1 overflow-x-auto custom-scrollbar">
-          {files.map((file, i) => (
-            <div key={i} className="flex items-center gap-1.5 bg-zinc-800 rounded-lg px-2 py-1 text-[10px] text-zinc-300 border border-zinc-700 shrink-0">
-              <span className="truncate max-w-[100px]">{file.name}</span>
-              <button type="button" onClick={() => removeFile(i)} className="hover:text-red-400 transition-colors">✕</button>
-            </div>
-          ))}
-        </div>
-      )}
+      {/* File Previews */}
+      {files.length > 0 && (
+        <div className="flex gap-2 pb-2 px-1 overflow-x-auto custom-scrollbar">
+          {files.map((file, i) => (
+            <div key={i} className="flex items-center gap-1.5 bg-zinc-800 rounded-lg px-2 py-1 text-[10px] text-zinc-300 border border-zinc-700 shrink-0">
+              <span className="truncate max-w-[100px]">{file.name}</span>
+              <button type="button" onClick={() => removeFile(i)} className="hover:text-red-400 transition-colors">✕</button>
+            </div>
+          ))}
+        </div>
+      )}
 
-      {/* Top Row: Input & Actions */}
-      <div className="flex items-center gap-1">
-        <button type="button" onClick={onClose} title="Cancel (Esc)" className="p-1 text-zinc-600 hover:text-zinc-300 transition-colors rounded shrink-0">
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-        </button>
+      {/* Top Row: Input & Actions */}
+      <div className="flex items-center gap-1">
+        <button type="button" onClick={onClose} title="Cancel (Esc)" className="p-1 text-zinc-600 hover:text-zinc-300 transition-colors rounded shrink-0">
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+        </button>
 
-        <input
-          ref={inputRef}
-          type="text"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') handleSend();
-            if (e.key === 'Escape') onClose();
-          }}
-          placeholder="Type a branch prompt…"
-          className="flex-1 bg-transparent border-none text-sm text-zinc-200 placeholder:text-zinc-600 focus:ring-0 outline-none px-1 min-w-0"
-        />
+        <input
+          ref={inputRef}
+          type="text"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') handleSend();
+            if (e.key === 'Escape') onClose();
+          }}
+          placeholder="Type a branch prompt…"
+          className="flex-1 bg-transparent border-none text-sm text-zinc-200 placeholder:text-zinc-600 focus:ring-0 outline-none px-1 min-w-0"
+        />
 
-        <button 
-          type="button" 
-          onClick={() => setIsExpanded(!isExpanded)}
-          title="Toggle Options" 
-          className={`p-1 transition-colors rounded shrink-0 ${isExpanded ? 'text-zinc-300 bg-zinc-800' : 'text-zinc-600 hover:text-zinc-400'}`}
-        >
-          <svg className={`w-3.5 h-3.5 transition-transform duration-200 ${isExpanded ? 'rotate-180' : 'rotate-0'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
-          </svg>
-        </button>
+        <button
+          type="button"
+          onClick={() => setIsExpanded(!isExpanded)}
+          title="Toggle Options"
+          className={`p-1 transition-colors rounded shrink-0 ${isExpanded ? 'text-zinc-300 bg-zinc-800' : 'text-zinc-600 hover:text-zinc-400'}`}
+        >
+          <svg className={`w-3.5 h-3.5 transition-transform duration-200 ${isExpanded ? 'rotate-180' : 'rotate-0'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
 
-        <button
-          type="button"
-          onClick={handleSend}
-          disabled={!text.trim() && files.length === 0}
-          className="bg-blue-600 hover:bg-blue-500 disabled:opacity-30 disabled:cursor-not-allowed text-white p-1.5 rounded-lg transition-all shrink-0"
-        >
-          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" /></svg>
-        </button>
-      </div>
+        <button
+          type="button"
+          onClick={handleSend}
+          disabled={!text.trim() && files.length === 0}
+          className="bg-blue-600 hover:bg-blue-500 disabled:opacity-30 disabled:cursor-not-allowed text-white p-1.5 rounded-lg transition-all shrink-0"
+        >
+          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" /></svg>
+        </button>
+      </div>
 
-      {/* Expanded Bottom Row: File & Model Options */}
-      {isExpanded && (
-        <div className="flex items-center gap-2 pt-2 pb-0.5 px-1 mt-1 border-t border-zinc-700/50 animate-in slide-in-from-top-2 fade-in duration-200">
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            title="Attach files"
-            className="p-1.5 text-zinc-400 hover:text-blue-400 rounded-full transition-all hover:bg-zinc-800"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-            </svg>
-          </button>
-          
-          <div className="relative">
-            <button 
-              type="button" 
-              onClick={() => setIsModelMenuOpen(!isModelMenuOpen)}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium text-zinc-400 hover:text-white bg-zinc-800/40 hover:bg-zinc-800 transition-all group"
-            >
-              <span className="truncate max-w-[120px]">{currentModel?.name || 'Branch Model'}</span>
-              <svg className="w-3.5 h-3.5 text-zinc-500 group-hover:text-zinc-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l4-4 4 4m0 6l-4 4-4-4" /></svg>
-            </button>
+      {/* Expanded Bottom Row: File & Model Options */}
+      {isExpanded && (
+        <div className="flex items-center gap-2 pt-2 pb-0.5 px-1 mt-1 border-t border-zinc-700/50 animate-in slide-in-from-top-2 fade-in duration-200">
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            title="Attach files"
+            className="p-1.5 text-zinc-400 hover:text-blue-400 rounded-full transition-all hover:bg-zinc-800"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+            </svg>
+          </button>
 
-            {/* Mini Model Menu */}
-            {isModelMenuOpen && (
-              <div className="absolute top-[calc(100%+6px)] left-0 w-48 max-h-48 overflow-y-auto bg-zinc-900 border border-zinc-700 rounded-xl shadow-xl z-[70] p-1 custom-scrollbar">
-                {MODELS.map(model => (
-                  <button
-                    key={model.id}
-                    onClick={() => { onModelSelect(model.id); setIsModelMenuOpen(false); }}
-                    className={`w-full flex justify-between items-center text-left px-2 py-1.5 text-[11px] rounded-lg transition-colors ${selectedModel === model.id ? 'bg-zinc-800 text-white font-medium' : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-zinc-200'}`}
-                  >
-                    <span className="truncate">{model.name}</span>
-                    {selectedModel === model.id && <svg className="w-3 h-3 text-blue-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setIsModelMenuOpen(!isModelMenuOpen)}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium text-zinc-400 hover:text-white bg-zinc-800/40 hover:bg-zinc-800 transition-all group"
+            >
+              <span className="truncate max-w-[120px]">{currentModel?.name || 'Branch Model'}</span>
+              <svg className="w-3.5 h-3.5 text-zinc-500 group-hover:text-zinc-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l4-4 4 4m0 6l-4 4-4-4" /></svg>
+            </button>
+
+            {/* Mini Model Menu */}
+            {isModelMenuOpen && (
+              <div className="absolute top-[calc(100%+6px)] left-0 w-48 max-h-48 overflow-y-auto bg-zinc-900 border border-zinc-700 rounded-xl shadow-xl z-[70] p-1 custom-scrollbar">
+                {MODELS.map(model => (
+                  <button
+                    key={model.id}
+                    onClick={() => { onModelSelect(model.id); setIsModelMenuOpen(false); }}
+                    className={`w-full flex justify-between items-center text-left px-2 py-1.5 text-[11px] rounded-lg transition-colors ${selectedModel === model.id ? 'bg-zinc-800 text-white font-medium' : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-zinc-200'}`}
+                  >
+                    <span className="truncate">{model.name}</span>
+                    {selectedModel === model.id && <svg className="w-3 h-3 text-blue-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -213,9 +214,9 @@ export interface BranchMetadata {
 }
 
 // 2. UPDATE THIS INTERFACE
-interface ActiveBranch { 
-  y: number; 
-  nodeId: string; 
+interface ActiveBranch {
+  y: number;
+  nodeId: string;
   metadata: BranchMetadata; // <--- Now activeBranch knows about metadata
 }
 
@@ -259,7 +260,7 @@ function useBranchInteraction(
     }
     const containerRect = containerRef.current?.getBoundingClientRect();
     if (!containerRect) return;
-    
+
     const relY = e.clientY - containerRect.top;
     const absoluteClickY = e.clientY;
 
@@ -313,7 +314,7 @@ function useBranchInteraction(
         if (closestBlock) {
           blockId = `block-${blockIndex}-${closestBlock.tagName.toLowerCase()}`;
           const rect = closestBlock.getBoundingClientRect();
-          
+
           // ADD THIS LINE:
           const msgRelativeY = absoluteClickY - closestMsgEl.getBoundingClientRect().top;
 
@@ -321,7 +322,7 @@ function useBranchInteraction(
 
           const textContent = closestBlock.innerText || closestBlock.textContent || '';
           const words = textContent.trim().split(/\s+/).filter(Boolean);
-          
+
           if (words.length > 0) {
             const estimatedWordIndex = Math.min(words.length - 1, Math.floor(relativeYInBlock * words.length));
             const start = Math.max(0, estimatedWordIndex - 3);
@@ -342,19 +343,19 @@ function useBranchInteraction(
     });
 
     // 4. Proceed to open the composer
-    setActiveBranch({ 
-      y: relY, 
+    setActiveBranch({
+      y: relY,
       nodeId: closestNodeId,
       // Create the metadata object (Now includes blockIndex!)
-      metadata: { 
-        messageId, 
-        blockId, 
+      metadata: {
+        messageId,
+        blockId,
         blockIndex, // <--- ADD THIS
-        relativeYInBlock, 
-        textSnippet, 
-        msgRelativeY: absoluteClickY - (closestMsgEl?.getBoundingClientRect().top || 0) 
-      } 
-    });setCursor(null);
+        relativeYInBlock,
+        textSnippet,
+        msgRelativeY: absoluteClickY - (closestMsgEl?.getBoundingClientRect().top || 0)
+      }
+    }); setCursor(null);
 
     if (onBranch && closestNodeId !== 'unknown') {
       onBranch(closestNodeId);
@@ -367,7 +368,7 @@ function useBranchInteraction(
       const target = e.target as Element;
       if (target.closest('.branch-composer-ui')) return;
       if (zoneRef.current?.contains(target)) return;
-      
+
       closeBranch(true);
     };
     document.addEventListener('mousedown', handler);
@@ -375,13 +376,14 @@ function useBranchInteraction(
   }, [activeBranch, closeBranch]);
 
   // ── Submit Logic ──────────────────────────────────────────────────────────
-  const handleBranchSubmit = useCallback((text: string, files: File[]) => {  if (!activeBranch) return;
+  const handleBranchSubmit = useCallback((text: string, files: File[]) => {
+    if (!activeBranch) return;
     const containerRect = containerRef.current?.getBoundingClientRect();
     if (!containerRect) return;
 
     const absoluteClickY = containerRect.top + activeBranch.y;
     const messageEls = document.querySelectorAll<HTMLElement>('[data-message-id]');
-    
+
     let closestMsgEl: HTMLElement | null = null;
     let minMsgDist = Infinity;
 
@@ -434,7 +436,7 @@ function useBranchInteraction(
 
           const textContent = closestBlock.innerText || closestBlock.textContent || '';
           const words = textContent.trim().split(/\s+/).filter(Boolean);
-          
+
           if (words.length > 0) {
             const estimatedWordIndex = Math.min(words.length - 1, Math.floor(relativeYInBlock * words.length));
             const start = Math.max(0, estimatedWordIndex - 3);
@@ -453,11 +455,11 @@ function useBranchInteraction(
       textSnippet,
       promptText: text
     });
-    
+
     // 2. Call the EXACT same submit function as the main bottom input!
-    if (onSendMessage) {
-      onSendMessage(text, files, activeBranch.metadata); 
-    }
+    if (onSendMessage) {
+      onSendMessage(text, files, activeBranch.metadata);
+    }
 
     // 3. Close the floating composer normally (don't trigger onCancelBranch)
     closeBranch(false);
@@ -512,6 +514,7 @@ interface BranchMiniChatProps {
   title?: string;
   onSendMessage?: (text: string, files: File[]) => void;
   onGoToNode?: () => void;
+  onStopGeneration?: () => void;
   containerRef: React.RefObject<HTMLDivElement>;
 }
 
@@ -540,7 +543,7 @@ const MiniMarkdown: React.FC<{ content: string }> = ({ content }) => (
 );
 
 const BranchMiniChat: React.FC<BranchMiniChatProps> = ({
-  line, uniqueMsgId, branchNode, isGeneratingThisNode, title, onSendMessage, onGoToNode, containerRef
+  line, uniqueMsgId, branchNode, isGeneratingThisNode, title, onSendMessage, onGoToNode, onStopGeneration, containerRef
 }) => {
   // Position in pixels relative to the container element
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
@@ -572,7 +575,8 @@ const BranchMiniChat: React.FC<BranchMiniChatProps> = ({
       // Left edge: right side of the message bubble + gap
       // The message bubble ends near calc(50% + 384px) of the container
       const msgBubbleRight = msgRect.right - containerRect.left;
-      setPos({ top: lineTop, left: msgBubbleRight + LINE_WIDTH });    };
+      setPos({ top: lineTop, left: msgBubbleRight + LINE_WIDTH });
+    };
 
     updatePosition();
     window.addEventListener('resize', updatePosition);
@@ -663,9 +667,8 @@ const BranchMiniChat: React.FC<BranchMiniChatProps> = ({
               )}
               {messages.map((msg, i) => (
                 <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[92%] px-2.5 py-1.5 rounded-xl leading-relaxed ${
-                    msg.role === 'user' ? 'bg-zinc-700/70 text-white rounded-tr-none text-[11px]' : 'bg-transparent pl-0'
-                  }`}>
+                  <div className={`max-w-[92%] px-2.5 py-1.5 rounded-xl leading-relaxed ${msg.role === 'user' ? 'bg-zinc-700/70 text-white rounded-tr-none text-[11px]' : 'bg-transparent pl-0'
+                    }`}>
                     {msg.role === 'user' ? msg.content : (
                       msg.content
                         ? <MiniMarkdown content={msg.content} />
@@ -693,13 +696,22 @@ const BranchMiniChat: React.FC<BranchMiniChatProps> = ({
                 disabled={isGeneratingThisNode}
                 className="flex-1 bg-transparent text-[11px] text-zinc-200 placeholder:text-zinc-600 outline-none border-none min-w-0 disabled:opacity-50"
               />
-              <button type="button" onClick={handleSend}
-                disabled={!input.trim() || isGeneratingThisNode}
-                className="p-1 text-blue-400 hover:text-blue-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors shrink-0">
-                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
-                </svg>
-              </button>
+              {isGeneratingThisNode ? (
+                <button type="button" onClick={onStopGeneration} title="Stop generating"
+                  className="p-1 text-red-400 hover:text-red-300 transition-colors shrink-0">
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+                    <rect x="6" y="6" width="12" height="12" rx="2" ry="2" />
+                  </svg>
+                </button>
+              ) : (
+                <button type="button" onClick={handleSend}
+                  disabled={!input.trim()}
+                  className="p-1 text-blue-400 hover:text-blue-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors shrink-0">
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+                  </svg>
+                </button>
+              )}
             </div>
           </>
         )}
@@ -710,9 +722,9 @@ const BranchMiniChat: React.FC<BranchMiniChatProps> = ({
 
 
 
-export const ChatView: React.FC<ChatViewProps> = ({ 
-  history, 
-  onSendMessage, 
+export const ChatView: React.FC<ChatViewProps> = ({
+  history,
+  onSendMessage,
   onSendMessageToNode,
   onSelectNode,
   branchLines = [],
@@ -726,6 +738,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   currentTitle,
   selectedModel,
   onModelSelect,
+  onStopGeneration,
 }) => {
   const [input, setInput] = React.useState('');
   const [files, setFiles] = useState<File[]>([]);
@@ -738,7 +751,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
-  
+
   // Track where the submit came from — only scroll to bottom for 'main'
   const [loadingSource, setLoadingSource] = useState<'main' | 'branch'>('main');
 
@@ -763,8 +776,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const filteredModels = useMemo(() => {
     return MODELS.filter(m => {
       const matchesProvider = selectedProviderTab === 'all' || m.provider === selectedProviderTab;
-      const matchesSearch = m.name.toLowerCase().includes(modelSearchQuery.toLowerCase()) || 
-                            m.description.toLowerCase().includes(modelSearchQuery.toLowerCase());
+      const matchesSearch = m.name.toLowerCase().includes(modelSearchQuery.toLowerCase()) ||
+        m.description.toLowerCase().includes(modelSearchQuery.toLowerCase());
       return matchesProvider && matchesSearch;
     });
   }, [selectedProviderTab, modelSearchQuery]);
@@ -778,7 +791,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setIsModelMenuOpen(false);
     };
-    
+
     if (isModelMenuOpen) {
       document.addEventListener('mousedown', handleClickOutside);
       window.addEventListener('keydown', handleKeyDown);
@@ -797,6 +810,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
       }
     }
   }, [history, loadingSource, userHasScrolledUp]);
+
+  // ADD THIS: Force scroll to bottom when currentNodeId changes (e.g., navigating to a branch)
+  useEffect(() => {
+    if (scrollRef.current) {
+      isAtBottomRef.current = true;
+      setUserHasScrolledUp(false);
+      // Slight delay to allow DOM to render new history
+      setTimeout(() => {
+        if (scrollRef.current) {
+          scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        }
+      }, 50);
+    }
+  }, [currentNodeId]);
 
   // Scroll to bottom while streaming — only for the main node
   useEffect(() => {
@@ -819,7 +846,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     if (scrollRef.current) {
       const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
       const distanceToBottom = scrollHeight - scrollTop - clientHeight;
-      
+
       if (distanceToBottom > 10) {
         isAtBottomRef.current = false;
         setUserHasScrolledUp(true);
@@ -867,9 +894,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() && files.length === 0 || isGenerating) return;
-    
+
     setLoadingSource('main'); // <--- ADD THIS: Flag source as 'main'
-    
+
     onSendMessage(input, files);
     setInput('');
     setFiles([]);
@@ -882,10 +909,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const allMessages: { msg: Message, nodeId: string, isLastInNode: boolean }[] = [];
   history.forEach((node) => {
     node.messages.forEach((msg, idx) => {
-      allMessages.push({ 
-        msg, 
-        nodeId: node.id, 
-        isLastInNode: idx === node.messages.length - 1 
+      allMessages.push({
+        msg,
+        nodeId: node.id,
+        isLastInNode: idx === node.messages.length - 1
       });
     });
   });
@@ -934,20 +961,21 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 ? () => onSelectNode!(line.targetNodeId!)
                 : undefined
             }
+            onStopGeneration={onStopGeneration}
           />
         );
       })}
 
       {activeBranch && (
-        <BranchComposer
-          anchorY={activeBranch.y}
-          onSend={handleBranchSubmit}
-          onClose={() => closeBranch(true)}
-          composerRef={composerRef}
-          selectedModel={selectedModel}
-          onModelSelect={onModelSelect}
-        />
-      )}
+        <BranchComposer
+          anchorY={activeBranch.y}
+          onSend={handleBranchSubmit}
+          onClose={() => closeBranch(true)}
+          composerRef={composerRef}
+          selectedModel={selectedModel}
+          onModelSelect={onModelSelect}
+        />
+      )}
 
       {allMessages.length === 0 && !isGenerating && (
         <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-700 gap-4 pointer-events-none z-0">
@@ -963,80 +991,80 @@ export const ChatView: React.FC<ChatViewProps> = ({
       <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto custom-scrollbar relative z-10">
         <div className="max-w-3xl mx-auto px-6 pt-8 pb-12 space-y-8">
           {allMessages.map(({ msg, nodeId }, idx) => {
-            const uniqueMsgId = `${nodeId}-${idx}`; 
-            
+            const uniqueMsgId = `${nodeId}-${idx}`;
+
             return (
-              <div 
-                id={`msg-${idx}`} 
-                key={uniqueMsgId} 
-                data-node-id={nodeId} 
-                data-message-id={uniqueMsgId} 
+              <div
+                id={`msg-${idx}`}
+                key={uniqueMsgId}
+                data-node-id={nodeId}
+                data-message-id={uniqueMsgId}
                 className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'} group animate-in fade-in slide-in-from-bottom-2 duration-500`}
               >
                 <div className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'} max-w-full`}>
-                  <div className={`max-w-full px-5 py-3 rounded-3xl relative transition-all duration-300 ${msg.role === 'user' ? 'bg-zinc-800/60 text-white rounded-tr-none border border-zinc-700/30' : 'bg-transparent text-zinc-200 rounded-tl-none border-none pl-0'}`}>                
-                    
+                  <div className={`max-w-full px-5 py-3 rounded-3xl relative transition-all duration-300 ${msg.role === 'user' ? 'bg-zinc-800/60 text-white rounded-tr-none border border-zinc-700/30' : 'bg-transparent text-zinc-200 rounded-tl-none border-none pl-0'}`}>
+
                     <div className="md-content relative z-10">
                       <ReactMarkdown components={{
-                        code: ({node, inline, className, children, ...props}: any) => {
+                        code: ({ node, inline, className, children, ...props }: any) => {
                           const match = /language-(\w+)/.exec(className || '');
                           const codeContent = String(children).replace(/\n$/, '');
-                          
+
                           if (inline) return <code className="bg-zinc-800 text-blue-400 px-2 py-1 rounded text-sm font-mono" {...props}>{children}</code>;
-                          
+
                           return (
                             <div className="relative group/code my-4 rounded-lg overflow-hidden border border-zinc-700/50">
                               <div className="flex items-center justify-between px-4 py-2 bg-zinc-900 border-b border-zinc-800 text-xs text-zinc-400">
                                 <span className="font-mono">{match ? match[1] : 'code'}</span>
-                                <button 
+                                <button
                                   onClick={() => navigator.clipboard.writeText(codeContent)}
                                   className="flex items-center gap-1.5 hover:text-white transition-colors"
                                 >
-                                <svg 
-                                  className="w-4 h-4" 
-                                  fill="none" 
-                                  stroke="currentColor" 
-                                  viewBox="0 0 24 24" 
-                                  xmlns="http://www.w3.org/2000/svg"
-                                >
-                                  <path 
-                                    strokeLinecap="round" 
-                                    strokeLinejoin="round" 
-                                    strokeWidth={2} 
-                                    d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-8a2 2 0 00-2-2z" 
-                                  />
-                                </svg>                                  <span>Copy</span>
+                                  <svg
+                                    className="w-4 h-4"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    viewBox="0 0 24 24"
+                                    xmlns="http://www.w3.org/2000/svg"
+                                  >
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-8a2 2 0 00-2-2z"
+                                    />
+                                  </svg>                                  <span>Copy</span>
                                 </button>
                               </div>
-                                {match ? (
-                                  <SyntaxHighlighter 
-                                    style={vscDarkPlus} 
-                                    language={match[1]} 
-                                    PreTag="div" 
-                                    className="!my-0 !bg-[#0d0d0d] custom-scrollbar" 
-                                    customStyle={{ margin: 0, padding: '1.5rem', background: '#0d0d0d' }}
-                                    {...props}
-                                  >
-                                    {codeContent}
-                                  </SyntaxHighlighter>
+                              {match ? (
+                                <SyntaxHighlighter
+                                  style={vscDarkPlus}
+                                  language={match[1]}
+                                  PreTag="div"
+                                  className="!my-0 !bg-[#0d0d0d] custom-scrollbar"
+                                  customStyle={{ margin: 0, padding: '1.5rem', background: '#0d0d0d' }}
+                                  {...props}
+                                >
+                                  {codeContent}
+                                </SyntaxHighlighter>
                               ) : (
                                 <div className="p-4 bg-[#0d0d0d] overflow-x-auto custom-scrollbar">
-                                    <code className="font-mono text-sm text-zinc-200" {...props}>{children}</code>
+                                  <code className="font-mono text-sm text-zinc-200" {...props}>{children}</code>
                                 </div>
                               )}
                             </div>
                           );
                         },
-                        h1: ({node, ...props}) => <h1 className="text-2xl font-bold mb-4 text-white" {...props} />,
-                        h2: ({node, ...props}) => <h2 className="text-xl font-bold mb-3 text-white" {...props} />,
-                        h3: ({node, ...props}) => <h3 className="text-lg font-bold mb-2 text-white" {...props} />,
-                        p: ({node, ...props}) => <p className={`leading-relaxed ${msg.role === 'user' ? 'mb-0' : 'mb-4 text-zinc-300'}`} {...props} />,                      
-                        ul: ({node, ...props}) => <ul className="list-disc list-inside mb-4 space-y-2 text-zinc-300" {...props} />,
-                        ol: ({node, ...props}) => <ol className="list-decimal list-inside mb-4 space-y-2 text-zinc-300" {...props} />,
-                        li: ({node, ...props}) => <li className="text-zinc-300" {...props} />,
-                        strong: ({node, ...props}) => <strong className="font-bold text-white" {...props} />,
-                        a: ({node, ...props}) => <a className="text-blue-400 hover:text-blue-300 underline" target="_blank" rel="noopener noreferrer" {...props} />,
-                        blockquote: ({node, ...props}) => <blockquote className="border-l-4 border-zinc-600 pl-4 italic text-zinc-400 my-4" {...props} />,  
+                        h1: ({ node, ...props }) => <h1 className="text-2xl font-bold mb-4 text-white" {...props} />,
+                        h2: ({ node, ...props }) => <h2 className="text-xl font-bold mb-3 text-white" {...props} />,
+                        h3: ({ node, ...props }) => <h3 className="text-lg font-bold mb-2 text-white" {...props} />,
+                        p: ({ node, ...props }) => <p className={`leading-relaxed ${msg.role === 'user' ? 'mb-0' : 'mb-4 text-zinc-300'}`} {...props} />,
+                        ul: ({ node, ...props }) => <ul className="list-disc list-inside mb-4 space-y-2 text-zinc-300" {...props} />,
+                        ol: ({ node, ...props }) => <ol className="list-decimal list-inside mb-4 space-y-2 text-zinc-300" {...props} />,
+                        li: ({ node, ...props }) => <li className="text-zinc-300" {...props} />,
+                        strong: ({ node, ...props }) => <strong className="font-bold text-white" {...props} />,
+                        a: ({ node, ...props }) => <a className="text-blue-400 hover:text-blue-300 underline" target="_blank" rel="noopener noreferrer" {...props} />,
+                        blockquote: ({ node, ...props }) => <blockquote className="border-l-4 border-zinc-600 pl-4 italic text-zinc-400 my-4" {...props} />,
                       }}>
                         {msg.content}
                       </ReactMarkdown>
@@ -1057,20 +1085,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       {copiedMessageId === uniqueMsgId ? (
                         <svg className="w-3.5 h-3.5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
                       ) : (
-                    <svg 
-                      className="w-4 h-4" 
-                      fill="none" 
-                      stroke="currentColor" 
-                      viewBox="0 0 24 24" 
-                      xmlns="http://www.w3.org/2000/svg"
-                    >
-                      <path 
-                        strokeLinecap="round" 
-                        strokeLinejoin="round" 
-                        strokeWidth={2} 
-                        d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-8a2 2 0 00-2-2z" 
-                      />
-                    </svg>                      )}
+                        <svg
+                          className="w-4 h-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                          xmlns="http://www.w3.org/2000/svg"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-8a2 2 0 00-2-2z"
+                          />
+                        </svg>)}
                     </button>
                   </div>
                 </div>
@@ -1090,24 +1118,23 @@ export const ChatView: React.FC<ChatViewProps> = ({
       </div>
 
       {/* Minimap */}
-      <div 
+      <div
         className={`absolute right-4 top-24 bottom-32 w-4 z-50 transition-opacity duration-300 ${showMinimap ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
         onMouseEnter={() => {
-           setShowMinimap(true);
-           if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+          setShowMinimap(true);
+          if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
         }}
         onMouseLeave={() => {
-           scrollTimeoutRef.current = setTimeout(() => setShowMinimap(false), 1000);
+          scrollTimeoutRef.current = setTimeout(() => setShowMinimap(false), 1000);
         }}
       >
         <div className="w-full h-full flex flex-col gap-1 py-2 overflow-hidden items-end">
           {allMessages.map((m, i) => (
-            <div 
+            <div
               key={i}
               onClick={() => document.getElementById(`msg-${i}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
-              className={`w-full rounded-sm cursor-pointer transition-all ${
-                m.msg.role === 'user' ? 'bg-blue-500 opacity-60 hover:opacity-100' : 'bg-zinc-500 opacity-40 hover:opacity-100'
-              }`}
+              className={`w-full rounded-sm cursor-pointer transition-all ${m.msg.role === 'user' ? 'bg-blue-500 opacity-60 hover:opacity-100' : 'bg-zinc-500 opacity-40 hover:opacity-100'
+                }`}
               style={{ height: `${Math.max(4, Math.min((m.msg.content.length / 50), 60))}px`, minHeight: '8px' }}
               title={`${m.msg.role}: ${m.msg.content.substring(0, 20)}...`}
             />
@@ -1130,29 +1157,29 @@ export const ChatView: React.FC<ChatViewProps> = ({
           )}
 
           <div className={`flex flex-col gap-0 bg-zinc-800/40 border rounded-[2rem] p-0.7 transition-all shadow-inner ${isBranching ? 'border-blue-500/50 rounded-t-2xl ring-2 ring-blue-500/10' : 'border-zinc-700/50 focus-within:border-zinc-500 focus-within:bg-zinc-800/60'}`}>
-            
-           {files.length > 0 && (
-            <div className="w-full flex gap-2 px-4 pt-4 overflow-x-auto custom-scrollbar">
-              {files.map((file, i) => (
-                <div key={i} className="flex items-center gap-2 bg-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-300 border border-zinc-700 shrink-0">
-                  <span className="truncate max-w-[150px]">{file.name}</span>
-                  <button 
-                    type="button"
-                    onClick={() => removeFile(i)}
-                    className="hover:text-red-400 transition-colors"
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-            
-           <form onSubmit={handleSubmit} className="w-full flex flex-col gap-2 px-3 pb-3 pt-2 relative">
-              
-              <input 
-                type="file" 
-                multiple 
+
+            {files.length > 0 && (
+              <div className="w-full flex gap-2 px-4 pt-4 overflow-x-auto custom-scrollbar">
+                {files.map((file, i) => (
+                  <div key={i} className="flex items-center gap-2 bg-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-300 border border-zinc-700 shrink-0">
+                    <span className="truncate max-w-[150px]">{file.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeFile(i)}
+                      className="hover:text-red-400 transition-colors"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <form onSubmit={handleSubmit} className="w-full flex flex-col gap-2 px-3 pb-3 pt-2 relative">
+
+              <input
+                type="file"
+                multiple
                 ref={fileInputRef}
                 className="hidden"
                 onChange={handleFileSelect}
@@ -1181,118 +1208,124 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
               <div className="flex items-center justify-between relative">
                 <div className="flex items-center gap-2" ref={modelMenuRef}>
-                    <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        disabled={isGenerating}
-                        className="p-2 text-zinc-400 hover:text-blue-400 rounded-full transition-all disabled:opacity-50"
-                        title="Attach files"
-                    >
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                        </svg>
-                    </button>
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isGenerating}
+                    className="p-2 text-zinc-400 hover:text-blue-400 rounded-full transition-all disabled:opacity-50"
+                    title="Attach files"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                    </svg>
+                  </button>
 
-                   <button 
-                      type="button" 
-                      onClick={() => setIsModelMenuOpen(!isModelMenuOpen)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium text-zinc-400 hover:text-white transition-all group"
-                    >
-                      <span>{MODELS.find(m => m.id === selectedModel)?.name || 'Select Model'}</span>
-                      <svg className={`w-3.5 h-3.5 transition-transform ${isModelMenuOpen ? 'rotate-180 text-white' : 'text-zinc-500 group-hover:text-zinc-300'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l4-4 4 4m0 6l-4 4-4-4" /></svg>
-                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsModelMenuOpen(!isModelMenuOpen)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium text-zinc-400 hover:text-white transition-all group"
+                  >
+                    <span>{MODELS.find(m => m.id === selectedModel)?.name || 'Select Model'}</span>
+                    <svg className={`w-3.5 h-3.5 transition-transform ${isModelMenuOpen ? 'rotate-180 text-white' : 'text-zinc-500 group-hover:text-zinc-300'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l4-4 4 4m0 6l-4 4-4-4" /></svg>
+                  </button>
 
-                   {isModelMenuOpen && (
-                      <div className="absolute bottom-[calc(100%+16px)] left-0 w-[420px] max-h-[400px] bg-zinc-900 border border-zinc-800 rounded-2xl flex overflow-hidden shadow-2xl z-50 animate-in fade-in slide-in-from-bottom-2 duration-200">
-                        <div className="w-14 bg-zinc-950 border-r border-zinc-800/80 flex flex-col items-center py-3 gap-3">
-                          {providers.map(p => (
-                            <button 
-                              key={p} 
-                              onClick={() => setSelectedProviderTab(p)} 
-                              title={p.charAt(0).toUpperCase() + p.slice(1)}
-                              className={`w-10 h-10 flex items-center justify-center rounded-xl transition-all group ${
-                                selectedProviderTab === p ? 'bg-zinc-800 shadow-inner' : 'hover:bg-zinc-800/50'
+                  {isModelMenuOpen && (
+                    <div className="absolute bottom-[calc(100%+16px)] left-0 w-[420px] max-h-[400px] bg-zinc-900 border border-zinc-800 rounded-2xl flex overflow-hidden shadow-2xl z-50 animate-in fade-in slide-in-from-bottom-2 duration-200">
+                      <div className="w-14 bg-zinc-950 border-r border-zinc-800/80 flex flex-col items-center py-3 gap-3">
+                        {providers.map(p => (
+                          <button
+                            key={p}
+                            onClick={() => setSelectedProviderTab(p)}
+                            title={p.charAt(0).toUpperCase() + p.slice(1)}
+                            className={`w-10 h-10 flex items-center justify-center rounded-xl transition-all group ${selectedProviderTab === p ? 'bg-zinc-800 shadow-inner' : 'hover:bg-zinc-800/50'
                               }`}
-                            >
-                              <ProviderIcon provider={p} isActive={selectedProviderTab === p} />
+                          >
+                            <ProviderIcon provider={p} isActive={selectedProviderTab === p} />
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="flex-1 flex flex-col bg-[#111111] min-w-0">
+                        <div className="p-3 border-b border-zinc-800/80 space-y-2.5">
+                          <div className="flex items-center justify-between px-1">
+                            <span className="text-[13px] font-semibold text-white">Models</span>
+                            <button className="text-[10px] uppercase tracking-wider font-bold bg-blue-500/10 text-blue-400 px-2 py-1 rounded hover:bg-blue-500/20 transition-colors">
+                              Unlock All $8/mo
                             </button>
-                          ))}
+                          </div>
+                          <div className="relative flex items-center">
+                            <svg className="absolute left-3 w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+                            <input
+                              type="text"
+                              value={modelSearchQuery}
+                              onChange={(e) => setModelSearchQuery(e.target.value)}
+                              placeholder="Search models..."
+                              className="w-full bg-zinc-900/50 border border-zinc-800 text-xs text-white rounded-lg py-2 pl-9 pr-3 focus:outline-none focus:border-zinc-700 focus:bg-zinc-900 transition-all"
+                            />
+                          </div>
                         </div>
 
-                        <div className="flex-1 flex flex-col bg-[#111111] min-w-0">
-                          <div className="p-3 border-b border-zinc-800/80 space-y-2.5">
-                            <div className="flex items-center justify-between px-1">
-                              <span className="text-[13px] font-semibold text-white">Models</span>
-                              <button className="text-[10px] uppercase tracking-wider font-bold bg-blue-500/10 text-blue-400 px-2 py-1 rounded hover:bg-blue-500/20 transition-colors">
-                                Unlock All $8/mo
-                              </button>
+                        <div className="flex-1 overflow-y-auto p-2 space-y-0.5 custom-scrollbar">
+                          {filteredModels.length === 0 ? (
+                            <div className="flex flex-col items-center justify-center h-24 text-xs text-zinc-500">
+                              <p>No models found.</p>
                             </div>
-                            <div className="relative flex items-center">
-                              <svg className="absolute left-3 w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-                              <input 
-                                type="text"
-                                value={modelSearchQuery}
-                                onChange={(e) => setModelSearchQuery(e.target.value)}
-                                placeholder="Search models..."
-                                className="w-full bg-zinc-900/50 border border-zinc-800 text-xs text-white rounded-lg py-2 pl-9 pr-3 focus:outline-none focus:border-zinc-700 focus:bg-zinc-900 transition-all"
-                              />
-                            </div>
-                          </div>
-
-                          <div className="flex-1 overflow-y-auto p-2 space-y-0.5 custom-scrollbar">
-                            {filteredModels.length === 0 ? (
-                              <div className="flex flex-col items-center justify-center h-24 text-xs text-zinc-500">
-                                <p>No models found.</p>
-                              </div>
-                            ) : (
-                              filteredModels.map((model) => (
-                                <div 
-                                  key={model.id}
-                                  onClick={() => {
-                                    onModelSelect(model.id);
-                                    setIsModelMenuOpen(false);
-                                  }}
-                                  className="group flex flex-col p-2.5 rounded-xl hover:bg-zinc-800/50 cursor-pointer transition-colors"
-                                >
-                                  <div className="flex items-center justify-between">
-                                    <div className="flex items-center gap-2">
-                                      <span className={`font-semibold text-[13px] ${selectedModel === model.id ? 'text-white' : 'text-zinc-300 group-hover:text-white'}`}>
-                                        {model.name}
-                                      </span>
-                                      {model.isPremium && (
-                                        <div className="flex items-center gap-1 bg-blue-900/30 border border-blue-500/20 rounded text-blue-400 px-1 py-0.5">
-                                          <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L2 12L12 22L22 12L12 2Z"/></svg>
-                                        </div>
-                                      )}
-                                      {selectedModel === model.id && (
-                                        <svg className="w-3.5 h-3.5 text-blue-400 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
-                                      )}
-                                    </div>
-                                    <div className="flex items-center gap-2 text-zinc-600 opacity-0 group-hover:opacity-100 transition-opacity">
-                                      <svg className="w-3.5 h-3.5 hover:text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" title="Info"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                                    </div>
+                          ) : (
+                            filteredModels.map((model) => (
+                              <div
+                                key={model.id}
+                                onClick={() => {
+                                  onModelSelect(model.id);
+                                  setIsModelMenuOpen(false);
+                                }}
+                                className="group flex flex-col p-2.5 rounded-xl hover:bg-zinc-800/50 cursor-pointer transition-colors"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <span className={`font-semibold text-[13px] ${selectedModel === model.id ? 'text-white' : 'text-zinc-300 group-hover:text-white'}`}>
+                                      {model.name}
+                                    </span>
+                                    {model.isPremium && (
+                                      <div className="flex items-center gap-1 bg-blue-900/30 border border-blue-500/20 rounded text-blue-400 px-1 py-0.5">
+                                        <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L2 12L12 22L22 12L12 2Z" /></svg>
+                                      </div>
+                                    )}
+                                    {selectedModel === model.id && (
+                                      <svg className="w-3.5 h-3.5 text-blue-400 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
+                                    )}
                                   </div>
-                                  <p className="text-[11px] text-zinc-500 mt-0.5 truncate pr-4">{model.description}</p>
+                                  <div className="flex items-center gap-2 text-zinc-600 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <svg className="w-3.5 h-3.5 hover:text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" title="Info"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                                  </div>
                                 </div>
-                              ))
-                            )}
-                          </div>
+                                <p className="text-[11px] text-zinc-500 mt-0.5 truncate pr-4">{model.description}</p>
+                              </div>
+                            ))
+                          )}
                         </div>
                       </div>
-                   )}
-                </div>
-              
-                <button 
-                  type="submit" 
-                  disabled={(!input.trim() && files.length === 0) || isGenerating} 
-                  className={`p-2 rounded-xl transition-all ${(!input.trim() && files.length === 0) || isGenerating ? 'text-zinc-600 cursor-not-allowed' : (isBranching ? 'text-blue-500 hover:text-blue-400' : 'text-zinc-200 hover:text-white')} hover:scale-[1.02] active:scale-[0.98]`}
-                >
-                  {isGenerating ? (
-                    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2" ry="2" /></svg>
-                  ) : (
-                    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" /></svg>
+                    </div>
                   )}
-                </button>
+                </div>
+
+                {isGenerating ? (
+                  <button
+                    type="button"
+                    onClick={onStopGeneration}
+                    className="p-2 rounded-xl transition-all text-red-500 hover:text-red-400 hover:scale-[1.02] active:scale-[0.98]"
+                    title="Stop generating"
+                  >
+                    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2" ry="2" /></svg>
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={(!input.trim() && files.length === 0)}
+                    className={`p-2 rounded-xl transition-all ${(!input.trim() && files.length === 0) ? 'text-zinc-600 cursor-not-allowed' : (isBranching ? 'text-blue-500 hover:text-blue-400' : 'text-zinc-200 hover:text-white')} hover:scale-[1.02] active:scale-[0.98]`}
+                  >
+                    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" /></svg>
+                  </button>
+                )}
               </div>
             </form>
           </div>
