@@ -1216,7 +1216,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     handleSubmit(e);
                   }
                 }}
-                placeholder={isBranching ? "What should this branch do?" : "Message Lumina..."}
+                placeholder={isBranching ? "What should this branch do?" : "Message Klados..."}
                 className="w-full bg-transparent border-none px-2 py-2 text-base font-medium focus:outline-none placeholder:text-zinc-400 text-zinc-900 resize-none overflow-y-auto custom-scrollbar min-h-[44px]"
                 style={{ minHeight: '44px', maxHeight: '200px', height: 'auto' }}
                 rows={1}

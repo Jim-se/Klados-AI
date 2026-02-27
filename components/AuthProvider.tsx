@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { supabase } from '../services/supabaseClient';
+import { supabase, initSupabase } from '../services/supabaseClient';
 import { Session } from '@supabase/supabase-js';
 
 interface AuthProviderProps {
@@ -11,20 +11,33 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Get initial session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setLoading(false);
-    });
+    const init = async () => {
+      try {
+        await initSupabase();
 
-    // Listen for auth changes
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-    });
+        // Get initial session
+        const { data: { session } } = await supabase.auth.getSession();
+        setSession(session);
+        setLoading(false);
 
-    return () => subscription.unsubscribe();
+        // Listen for auth changes
+        const {
+          data: { subscription },
+        } = supabase.auth.onAuthStateChange((_event, session) => {
+          setSession(session);
+        });
+
+        return subscription;
+      } catch (err) {
+        console.error("Failed to initialize AuthProvider:", err);
+      }
+    };
+
+    const initPromise = init();
+
+    return () => {
+      initPromise.then(subscription => subscription?.unsubscribe());
+    };
   }, []);
 
   if (loading) {

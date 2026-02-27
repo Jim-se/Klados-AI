@@ -1,9 +1,6 @@
 import OpenAI from "openai";
 
-const client = new OpenAI({
-  apiKey: import.meta.env.VITE_OPENAI_API_KEY,
-  dangerouslyAllowBrowser: true
-});
+// Client is now handled by the backend proxy
 
 // Helper function to convert File to base64
 const fileToBase64 = (file: File): Promise<string> => {
@@ -30,6 +27,8 @@ const isPdfFile = (file: File): boolean => {
   return file.type === 'application/pdf';
 };
 
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+
 export const generateResponseOpenAI = async (
   prompt: string,
   history: { role: 'user' | 'assistant'; content: string }[],
@@ -37,73 +36,75 @@ export const generateResponseOpenAI = async (
   modelId: string = "gpt-4o"
 ) => {
   try {
-    // Convert history to proper format
-    const messages: any[] = history.map(msg => ({
+    const messages = history.map(msg => ({
       role: msg.role,
       content: msg.content
     }));
 
-    // Build the user message content
     let userContent: any;
-
-    // If there are files, use array format
     if (files.length > 0) {
       const contentParts: any[] = [];
-
-      // Add text prompt first
       if (prompt.trim()) {
-        contentParts.push({
-          type: "text",
-          text: prompt
-        });
+        contentParts.push({ type: "text", text: prompt });
       }
-
-      // Add files
       for (const file of files) {
         if (isImageFile(file)) {
-          // Handle images
           const base64Data = await fileToBase64(file);
           contentParts.push({
             type: "image_url",
-            image_url: {
-              url: `data:${file.type};base64,${base64Data}`
-            }
+            image_url: { url: `data:${file.type};base64,${base64Data}` }
           });
-        } else if (isPdfFile(file)) {
-          // For PDFs, we need to read them differently
-          // OpenAI's chat API doesn't directly support PDFs in the same way as images
-          // You might need to extract text or use the Assistants API instead
-          console.warn("PDF support requires different handling - consider using Assistants API or extracting text first");
-          
-          // Alternatively, you could try sending it as an image if it's been converted
-          // or extract the text content first
-        } else {
-          console.warn(`Unsupported file type: ${file.type} for file: ${file.name}`);
         }
       }
-
       userContent = contentParts;
     } else {
-      // No files, just text
       userContent = prompt;
     }
 
-    // Add the user message
-    messages.push({
-      role: 'user',
-      content: userContent
+    messages.push({ role: 'user', content: userContent });
+
+    const response = await fetch(`${API_BASE_URL}/api/openai/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: modelId, messages, stream: true })
     });
 
-    // Create streaming response
-    const stream = await client.chat.completions.create({
-      model: modelId,
-      messages: messages,
-      stream: true,
-    });
+    if (!response.ok) throw new Error(`Proxy Error: ${response.status}`);
 
-    return stream;
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+
+    return {
+      getTextStream: async function* () {
+        if (!reader) return;
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value);
+            const lines = chunk.split('\n');
+
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6);
+                if (data.trim() === '[DONE]') break;
+                try {
+                  const json = JSON.parse(data);
+                  const content = json.choices?.[0]?.delta?.content;
+                  if (content) yield content;
+                } catch (e) { }
+              }
+            }
+          }
+        } finally {
+          reader.releaseLock();
+        }
+      },
+      cancel: () => reader?.cancel()
+    };
   } catch (error: any) {
-    console.error("❌ OpenAI API Error:", error);
+    console.error("❌ Proxy OpenAI API Error:", error);
     throw error;
   }
 };

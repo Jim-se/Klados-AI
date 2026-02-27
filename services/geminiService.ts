@@ -1,6 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
-
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// Client is now handled by the backend proxy
 
 const fileToBase64 = (file: File): Promise<string> => {
   return new Promise((resolve, reject) => {
@@ -21,95 +19,56 @@ const getMimeType = (file: File): string => {
 };
 
 
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+
 export const generateResponse = async (
-  prompt: string, 
+  prompt: string,
   history: { role: 'user' | 'model'; parts: { text: string }[] }[],
   files: File[] = [],
-  modelId: string = "gemini-3-flash-preview",
+  modelId: string = "gemini-1.5-flash",
   isMock: boolean = false
 ) => {
   try {
-    // 1. Build the user message parts
-    const userParts: any[] = [];
-    
-    // Add text prompt
-    if (prompt.trim()) {
-      userParts.push({ text: prompt });
-    }
-    
-    // Add files
-    if (files.length > 0) {
-      for (const file of files) {
-        const base64Data = await fileToBase64(file);
-        const mimeType = getMimeType(file);
-        
-        userParts.push({
-          inlineData: { 
-            mimeType: mimeType,
-            data: base64Data
-          }
-        });
-      }
-    }
-
-    // 2. Build the full contents array
-    const contents = [
-      ...history,
-      { role: 'user', parts: userParts }
-    ];
-
-    // 3. Call the STREAM method
-    const result = await ai.models.generateContentStream({
-      model: modelId, 
-      contents: contents,
-      config: { temperature: 0.8 }
+    const response = await fetch(`${API_BASE_URL}/api/gemini/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: modelId, prompt, history, files: [] }) // Simplified files for now
     });
 
-    // 4. Return the stream directly
-    return result;
+    if (!response.ok) throw new Error(`Proxy Error: ${response.status}`);
+
+    const data = await response.json();
+
+    return {
+      getTextStream: async function* () {
+        // Since the current backend gemini endpoint is non-streaming, 
+        // we'll yield the full text as a single chunk to maintain compatibility.
+        if (data.text) yield data.text;
+      },
+      cancel: () => { }
+    };
 
   } catch (error: any) {
-    console.error("❌ Gemini API Error Details:", {
-      message: error.message,
-      fullError: error
-    });
-    // We throw the error here so App.tsx can catch it and display the "⚠️ Error" message
-    throw error; 
+    console.error("❌ Proxy Gemini API Error:", error);
+    throw error;
   }
 };
 
 export const generateTitle = async (prompt: string, response: string, isMock: boolean = false) => {
-  
   try {
-    const result = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: [
-        { 
-          role: 'user', 
-          parts: [{ 
-            text: `Generate a short, descriptive title (2-6 words) for this conversation. Do not use quotes or special characters.
-
-User: "${prompt}"
-AI: "${response.substring(0, 150)}..."
-
-Title:` 
-          }] 
-        }
-      ],
-      config: { temperature: 0.7 }
+    const res = await fetch(`${API_BASE_URL}/api/gemini/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "gemini-1.5-flash",
+        prompt: `Generate a short, descriptive title (2-6 words) for this conversation. Do not use quotes or special characters.\n\nUser: "${prompt}"\nAI: "${response.substring(0, 150)}..."\n\nTitle:`
+      })
     });
 
-    let title = result.text?.replace(/["'#*\n]/g, '').trim() || "";
-    
-    // Basic validation: reject if empty, too long, or is just the prompt repeated
-    if (!title || 
-        title.length > 60 || 
-        title.length < 3 ||
-        title.toLowerCase() === prompt.toLowerCase().substring(0, title.length)) {
-      return "New Conversation";
-    }
-    
-    return title;
+    if (!res.ok) return "New Conversation";
+    const data = await res.json();
+    let title = data.text?.replace(/["'#*\n]/g, '').trim() || "";
+    return title || "New Conversation";
   } catch (err) {
     return "New Conversation";
   }

@@ -8,7 +8,7 @@ import { ProfileView } from './components/ProfileView';
 import { useTheme } from './src/contexts/ThemeContext';
 //import { generateResponse, generateTitle } from './services/geminiService';
 import { dbService } from './services/dbService';
-import { supabase } from './services/supabaseClient';
+import { initSupabase } from './services/supabaseClient';
 import { generateResponseOpenAI } from './services/openaiService';
 import { generateResponse, generateTitle } from './services/openRouterService';
 interface Conversation {
@@ -122,11 +122,11 @@ const App: React.FC = () => {
   useEffect(() => {
     const loadSidebar = async () => {
       try {
+        await initSupabase(); // Initialize Supabase with config from backend
         const data = await dbService.fetchConversations();
         setConversations(data);
         const userProfile = await dbService.fetchUserProfile();
 
-        // Update both states if the profile exists
         if (userProfile) {
           setFullName(userProfile.fullName);
           setEmail(userProfile.email || null);
