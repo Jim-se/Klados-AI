@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+console.log(`🛰️ Calling Backend at: ${API_BASE_URL}`);
 
 // We'll initialize with placeholders and then update once we fetch the real config.
 // Or we can just use a proxy.
