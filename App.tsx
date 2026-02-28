@@ -694,7 +694,7 @@ const App: React.FC = () => {
 
   const currentTitle = useMemo(() => {
     const node = workspace.currentNodeId ? workspace.nodes[workspace.currentNodeId] : null;
-    return node?.title && node.title !== '...' ? node.title : "LLM-Brancher Session";
+    return node?.title && node.title !== '...' ? node.title : "Klados-AI Session";
   }, [workspace.nodes, workspace.currentNodeId]);
 
   const handleNodeSelect = useCallback((id: string) => {
@@ -736,8 +736,8 @@ const App: React.FC = () => {
                       </svg>
                     </div>
                     <div>
-                      <h1 className="text-[13px] font-bold tracking-tight uppercase text-[var(--app-text)]">LLM-Brancher</h1>
-                      <p className="text-[8px] font-bold tracking-[0.2em] uppercase text-[var(--app-text-muted)]">Alpha Version</p>
+                      <h1 className="text-[13px] font-bold tracking-tight uppercase text-[var(--app-text)]">Klados-AI</h1>
+                      <p className="text-[8px] font-bold tracking-[0.2em] uppercase text-[var(--app-text-muted)]">Beta Version</p>
                     </div>
                   </div>
                 )}

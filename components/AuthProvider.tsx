@@ -129,7 +129,7 @@ const Auth: React.FC = () => {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M13 10V3L4 14h7v7l9-11h-7z" />
             </svg>
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-zinc-900">LLM-Brancher</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-zinc-900">Klados-AI</h1>
           <p className="text-xs font-bold tracking-[0.2em] uppercase text-zinc-400 mt-2">
             Alpha Version
           </p>
