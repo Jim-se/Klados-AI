@@ -278,7 +278,7 @@ const App: React.FC = () => {
     }
   };
 
-  const handleSendMessage = async (text: string, files: File[], branchMetadata?: BranchMetadata) => {
+  const handleSendMessage = async (text: string, files: File[], branchMetadata?: BranchMetadata, thinking?: boolean) => {
     if (isGenerating || (!text.trim() && files.length === 0)) return; console.log('🚀 [START] Message send initiated');
     const perfStart = performance.now();
     setIsGenerating(true);
@@ -399,7 +399,8 @@ const App: React.FC = () => {
         text,
         aiContext as any,
         files,
-        selectedModel
+        selectedModel,
+        thinking
       );
 
       generationRef.current = result;
@@ -587,7 +588,7 @@ const App: React.FC = () => {
   };
 
 
-  const handleSendMessageToNode = useCallback(async (nodeId: string, text: string, files: File[]) => {
+  const handleSendMessageToNode = useCallback(async (nodeId: string, text: string, files: File[], thinking?: boolean) => {
     // Temporarily switch currentNodeId to the branch node, send, then restore
     // We do this by saving branchingFromId state and re-using handleSendMessage logic
     // but targeting a specific existing node

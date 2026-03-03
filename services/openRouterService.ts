@@ -28,7 +28,8 @@ export const generateResponse = async (
   prompt: string,
   history: { role: 'user' | 'assistant'; content: string }[],
   files: File[] = [],
-  modelId: string = "openai/gpt-4o"
+  modelId: string = "openai/gpt-4o",
+  thinking: boolean = false
 ) => {
   try {
     const messages: any[] = history.map(msg => ({
@@ -62,13 +63,20 @@ export const generateResponse = async (
     const { data: { session } } = await supabase.auth.getSession();
     const token = session?.access_token;
 
+    const requestBody: any = { model: modelId, messages, stream: true };
+    if (thinking) {
+      requestBody.include_reasoning = true;
+      // Some providers use reasoning_effort
+      requestBody.provider = { include_reasoning: true };
+    }
+
     const response = await fetch(`${API_BASE_URL}/api/openrouter/chat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`
       },
-      body: JSON.stringify({ model: modelId, messages, stream: true }),
+      body: JSON.stringify(requestBody),
     });
 
     if (!response.ok) throw new Error(`Proxy Error: ${response.status}`);

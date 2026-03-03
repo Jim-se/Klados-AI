@@ -17,8 +17,8 @@ export interface BranchMetadata {
 
 export interface ChatViewProps {
   history: ChatNode[];
-  onSendMessage: (text: string, files: File[], branchMetadata?: BranchMetadata) => void;
-  onSendMessageToNode?: (nodeId: string, text: string, files: File[]) => void;
+  onSendMessage: (text: string, files: File[], branchMetadata?: BranchMetadata, thinking?: boolean) => void;
+  onSendMessageToNode?: (nodeId: string, text: string, files: File[], thinking?: boolean) => void;
   onSelectNode?: (nodeId: string) => void;
   branchLines?: BranchMetadata[];
   onBranch: (nodeId: string) => void;
@@ -471,14 +471,15 @@ function useBranchInteraction(
 // ─────────────────────────────────────────────────────────────────────────────
 
 const MODELS = [
-  { id: 'google/gemini-2.0-flash-lite-preview-02-05:free', name: 'Gemini 2.0 Flash Lite', provider: 'google', description: 'Lightning-fast with surprising capability', isPremium: false },
-  { id: 'google/gemini-2.0-pro-exp-02-05:free', name: 'Gemini 2.0 Pro Exp', provider: 'google', description: 'Google\'s newest flagship with advanced reasoning', isPremium: true },
-  { id: 'google/gemini-pro-1.5', name: 'Gemini 1.5 Pro', provider: 'google', description: 'High fidelity generation built on Gemini', isPremium: true },
   { id: 'arcee-ai/trinity-large-preview:free', name: 'Trinity Large (Free)', provider: 'arcee', description: 'Advanced preview model from Arcee AI', isPremium: false },
-  { id: 'openai/gpt-4o', name: 'GPT-4o', provider: 'openai', description: 'OpenAI\'s latest with breakthrough speed and intelligence', isPremium: true },
-  { id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini', provider: 'openai', description: 'Fast, affordable model for everyday tasks', isPremium: false },
-  { id: 'openai/o1-preview', name: 'GPT-o1 Preview', provider: 'openai', description: 'Advanced reasoning and problem-solving capabilities', isPremium: true },
-  { id: 'anthropic/claude-3.5-sonnet', name: 'Claude Sonnet 3.5', provider: 'anthropic', description: 'Anthropic\'s most advanced Sonnet yet', isPremium: true },
+  { id: 'openai/gpt-5.3', name: 'GPT 5.3', provider: 'openai', description: 'Next-generation reasoning model with unprecedented scale', isPremium: true },
+  { id: 'openai/gpt-5.2', name: 'GPT 5.2', provider: 'openai', description: 'Highly efficient, ultra-intelligent foundation model', isPremium: true },
+  { id: 'google/gemini-3.1-pro', name: 'Gemini 3.1 Pro', provider: 'google', description: 'Multimodal flagship with advanced logical planning', isPremium: true },
+  { id: 'google/gemini-3-flash', name: 'Gemini 3 Flash', provider: 'google', description: 'Ultrafast response with broad knowledge base', isPremium: false },
+  { id: 'anthropic/claude-4.6-sonnet', name: 'Claude Sonnet 4.6', provider: 'anthropic', description: 'State-of-the-art coding and creative assistance', isPremium: true },
+  { id: 'anthropic/claude-4.6-opus', name: 'Claude Opus 4.6', provider: 'anthropic', description: 'Maximum intelligence for complex scientific tasks', isPremium: true },
+  { id: 'moonshot/kimi-k2.5-thinking', name: 'Kimi K2.5 Thinking', provider: 'moonshot', description: 'Extended chain-of-thought processing', isPremium: true, thinkingOnly: true },
+  { id: 'zhipu/glm-5', name: 'GLM 5', provider: 'zhipu', description: 'Advanced bilingual language model', isPremium: true },
 ];
 
 const ProviderIcon = ({ provider, isActive }: { provider: string, isActive: boolean }) => {
@@ -494,6 +495,10 @@ const ProviderIcon = ({ provider, isActive }: { provider: string, isActive: bool
       return <svg className={className} viewBox="0 0 24 24" fill="currentColor"><path d="M21.05 18.98L12 3.32 2.95 18.98h2.36l6.69-11.58 6.69 11.58h2.36z" /></svg>;
     case 'arcee':
       return <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>;
+    case 'moonshot':
+      return <svg className={className} viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L4.5 20.29L5.21 21L12 18L18.79 21L19.5 20.29L12 2Z" /></svg>;
+    case 'zhipu':
+      return <svg className={className} viewBox="0 0 24 24" fill="currentColor"><path d="M11.644 1.609a.75.75 0 0 1 .712 0l7.5 4.125a.75.75 0 0 1 .394.656v8.25a.75.75 0 0 1-.394.656l-7.5 4.125a.75.75 0 0 1-.712 0l-7.5-4.125a.75.75 0 0 1-.394-.656v-8.25a.75.75 0 0 1 .394-.656l7.5-4.125z" /></svg>;
     default:
       return <div className={`w-5 h-5 rounded-full border-2 ${isActive ? 'border-white' : 'border-zinc-500 group-hover:border-zinc-300'}`} />;
   }
@@ -897,13 +902,23 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
+  const [isThinking, setIsThinking] = useState(false);
+
+  // Sync isThinking with model constraints
+  useEffect(() => {
+    const modelObj = MODELS.find(m => m.id === selectedModel);
+    if (modelObj?.thinkingOnly) {
+      setIsThinking(true);
+    }
+  }, [selectedModel]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() && files.length === 0 || isGenerating) return;
 
     setLoadingSource('main'); // <--- ADD THIS: Flag source as 'main'
 
-    onSendMessage(input, files);
+    onSendMessage(input, files, undefined, isThinking);
     setInput('');
     setFiles([]);
     setTimeout(() => {
@@ -1124,7 +1139,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   containerRef={contentRef}
                   onSendMessage={
                     line.targetNodeId && onSendMessageToNode
-                      ? (text, files) => onSendMessageToNode!(line.targetNodeId!, text, files)
+                      ? (text, files) => onSendMessageToNode!(line.targetNodeId!, text, files, isThinking)
                       : undefined
                   }
                   onGoToNode={
@@ -1251,6 +1266,24 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     <svg className={`w-3.5 h-3.5 transition-transform ${isModelMenuOpen ? 'rotate-180 text-zinc-900' : 'text-zinc-400 group-hover:text-zinc-600'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l4-4 4 4m0 6l-4 4-4-4" /></svg>
                   </button>
 
+                  {/* Thinking Toggle 
+                  <div className="flex items-center gap-2 ml-1">
+                    <button
+                      type="button"
+                      disabled={MODELS.find(m => m.id === selectedModel)?.thinkingOnly}
+                      onClick={() => setIsThinking(!isThinking)}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border transition-all ${isThinking
+                        ? 'bg-amber-50 border-amber-200 text-amber-600 shadow-sm'
+                        : 'bg-transparent border-[var(--border-color)] text-[var(--app-text-muted)] hover:bg-[var(--sidebar-bg)]'
+                        }`}
+                    >
+                      <svg className={`w-3.5 h-3.5 ${isThinking ? 'animate-pulse' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                      </svg>
+                      <span className="text-[10px] font-bold uppercase tracking-wider">Thinking</span>
+                    </button>
+                  </div>
+                  */}
                   {isModelMenuOpen && (
                     <div className="absolute bottom-[calc(100%+16px)] left-0 w-[420px] max-h-[400px] bg-[var(--card-bg)] border border-[var(--border-color)] rounded-2xl flex overflow-hidden shadow-2xl z-50 animate-in fade-in slide-in-from-bottom-2 duration-200">
                       <div className="w-14 bg-[var(--sidebar-bg)] border-r border-[var(--border-color)] flex flex-col items-center py-3 gap-3">

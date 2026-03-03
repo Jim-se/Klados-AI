@@ -52,7 +52,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ fullName, email, creat
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="bg-[var(--sidebar-bg)] rounded-2xl p-6 border border-[var(--border-color)]">
                             <label className="text-[10px] font-black uppercase tracking-[2px] text-[var(--app-text-muted)] block mb-2 opacity-50">
-                                Communication ID
+                                Email
                             </label>
                             <p className="text-[var(--app-text)] font-semibold truncate">{email || 'No email provided'}</p>
                         </div>
@@ -69,7 +69,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ fullName, email, creat
 
                         <div className="bg-[var(--sidebar-bg)] rounded-2xl p-6 border border-[var(--border-color)] md:col-span-2">
                             <label className="text-[10px] font-black uppercase tracking-[2px] text-[var(--app-text-muted)] block mb-2 opacity-50">
-                                Protocol Initialized
+                                Date Created
                             </label>
                             <p className="text-[var(--app-text)] font-semibold">
                                 {createdAt ? new Date(createdAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) : 'Pending...'}
