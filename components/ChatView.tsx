@@ -1580,7 +1580,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
       {/* Minimap */}
       <div
-        className={`absolute right-4 top-24 bottom-32 w-4 z-50 transition-opacity duration-300 ${showMinimap ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+        className={`hidden md:block absolute right-4 top-24 bottom-32 w-4 z-50 transition-opacity duration-300 ${showMinimap ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
         onMouseEnter={() => {
           setShowMinimap(true);
           if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);

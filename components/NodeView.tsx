@@ -200,7 +200,7 @@ export const NodeView: React.FC<NodeViewProps> = (props) => {
                         <MiniMap
                             nodeColor={(n: any) => (n.selected ? 'var(--accent-color)' : 'var(--border-color)')}
                             maskColor="rgba(0, 0, 0, 0.1)"
-                            className="!bg-[var(--card-bg)] !border-[var(--border-color)] !rounded-2xl"
+                            className="!hidden md:!block !bg-[var(--card-bg)] !border-[var(--border-color)] !rounded-2xl"
                             style={{ backgroundColor: 'var(--card-bg)', border: '1px solid var(--border-color)', borderRadius: '16px' }}
                         />
                         <CameraController currentNodeId={currentNodeId} viewMode={viewMode} rootNodeId={rootNodeId} />

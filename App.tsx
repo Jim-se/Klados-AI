@@ -48,14 +48,18 @@ const App: React.FC = () => {
     viewMode: 'chat',
     branchingFromId: null,
   });
-
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
   const { theme, mode, setTheme, setMode } = useTheme();
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatingNodeId, setGeneratingNodeId] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState("arcee-ai/trinity-large-preview:free");
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return window.innerWidth < 768; // Default to closed on mobile
+    }
+    return false;
+  });
   const generationRef = React.useRef<any>(null);
 
   const stopGeneration = useCallback(async () => {
@@ -273,6 +277,11 @@ const App: React.FC = () => {
 
   const handleSelectConversation = async (id: string | null) => {
     console.log('🔍 handleSelectConversation called! id:', id, 'activeConvId:', activeConvId);
+
+    // Auto-collapse sidebar on mobile when selecting a chat
+    if (typeof window !== 'undefined' && window.innerWidth < 768) {
+      setSidebarCollapsed(true);
+    }
 
     // Don't reload if we're already on this conversation
     if (id === activeConvId) {
@@ -1006,18 +1015,19 @@ const App: React.FC = () => {
                       </div>
                     )}
                   </div>
-
-                  <button
-                    onClick={() => setWorkspace(p => ({ ...p, viewMode: p.viewMode === 'chat' ? 'node' : 'chat' }))}
-                    className={`flex items-center gap-3 px-5 py-2 rounded-xl transition-all duration-300 border ${workspace.viewMode === 'chat'
-                      ? 'bg-[var(--card-bg)] border-[var(--border-color)] text-[var(--app-text)] hover:border-[var(--accent-color)] shadow-sm'
-                      : 'bg-[var(--accent-color)] border-[var(--accent-color)] text-white shadow-sm'
-                      }`}
-                  >
-                    <span className="text-[10px] font-bold uppercase tracking-widest">
-                      {workspace.viewMode === 'chat' ? 'Map Overview' : 'Back to Chat'}
-                    </span>
-                  </button>
+                  {(workspace.rootNodeId || workspace.currentNodeId) && (
+                    <button
+                      onClick={() => setWorkspace(p => ({ ...p, viewMode: p.viewMode === 'chat' ? 'node' : 'chat' }))}
+                      className={`flex items-center gap-3 px-5 py-2 rounded-xl transition-all duration-300 border ${workspace.viewMode === 'chat'
+                        ? 'bg-[var(--card-bg)] border-[var(--border-color)] text-[var(--app-text)] hover:border-[var(--accent-color)] shadow-sm'
+                        : 'bg-[var(--accent-color)] border-[var(--accent-color)] text-white shadow-sm'
+                        }`}
+                    >
+                      <span className="text-[10px] font-bold uppercase tracking-widest">
+                        {workspace.viewMode === 'chat' ? 'Map Overview' : 'Back to Chat'}
+                      </span>
+                    </button>
+                  )}
                 </div>
               </header>
 
