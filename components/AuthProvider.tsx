@@ -1,101 +1,44 @@
 import React, { useEffect, useState } from 'react';
 import { supabase, initSupabase } from '../services/supabaseClient';
-import { Session, User } from '@supabase/supabase-js';
+import { Session } from '@supabase/supabase-js';
 
 interface AuthProviderProps {
   children: React.ReactNode;
 }
 
-const addOneMonth = (dateLike?: string) => {
-  const baseDate = dateLike ? new Date(dateLike) : new Date();
-  const safeDate = Number.isNaN(baseDate.getTime()) ? new Date() : baseDate;
-  const nextDate = new Date(safeDate);
-  nextDate.setMonth(nextDate.getMonth() + 1);
-  return nextDate;
+const getAuthRedirectUrl = () => {
+  if (typeof window === 'undefined') {
+    return undefined;
+  }
+
+  return new URL('/', window.location.origin).toString();
 };
 
-const syncUserRecord = async (user: User) => {
-  const billingPeriodStart = user.created_at || new Date().toISOString();
-  const billingPeriodEnd = addOneMonth(billingPeriodStart).toISOString();
+const isPublicDemoRoute = () => {
+  if (typeof window === 'undefined') {
+    return false;
+  }
 
-  const { data: existing, error } = await supabase
-    .from('users')
-    .select('id, email, full_name, tier, billing_period_start, billing_period_end, total_requests, lifetime_cost, current_period_cost')
-    .eq('id', user.id)
-    .maybeSingle();
+  return window.location.pathname === '/demo';
+};
 
-  if (error) {
-    console.error('Error loading user profile:', error);
+const syncUserRecord = async (user: any) => {
+  if (!user?.id) {
     return;
   }
 
-  if (!existing) {
-    const { error: insertError } = await supabase
-      .from('users')
-      .insert({
-        id: user.id,
-        email: user.email ?? null,
-        full_name: user.user_metadata?.full_name ?? null,
-        tier: 'FREE',
-        billing_period_start: billingPeriodStart,
-        billing_period_end: billingPeriodEnd,
-        total_requests: 0,
-        lifetime_cost: 0,
-        current_period_cost: 0,
-      });
+  try {
+    const { error } = await supabase.from('users').upsert({
+      id: user.id,
+      email: user.email ?? null,
+      full_name: user.user_metadata?.full_name ?? null,
+    });
 
-    if (insertError) {
-      console.error('Error creating user profile:', insertError);
+    if (error) {
+      console.warn('[AUTH] Could not sync public.users record:', error.message);
     }
-
-    return;
-  }
-
-  const updates: Record<string, any> = {};
-
-  if (user.email && existing.email !== user.email) {
-    updates.email = user.email;
-  }
-
-  if (!existing.full_name && user.user_metadata?.full_name) {
-    updates.full_name = user.user_metadata.full_name;
-  }
-
-  if (!existing.tier) {
-    updates.tier = 'FREE';
-  }
-
-  if (!existing.billing_period_start) {
-    updates.billing_period_start = billingPeriodStart;
-  }
-
-  if (!existing.billing_period_end) {
-    updates.billing_period_end = billingPeriodEnd;
-  }
-
-  if (existing.total_requests == null) {
-    updates.total_requests = 0;
-  }
-
-  if (existing.lifetime_cost == null) {
-    updates.lifetime_cost = 0;
-  }
-
-  if (existing.current_period_cost == null) {
-    updates.current_period_cost = 0;
-  }
-
-  if (Object.keys(updates).length === 0) {
-    return;
-  }
-
-  const { error: updateError } = await supabase
-    .from('users')
-    .update(updates)
-    .eq('id', user.id);
-
-  if (updateError) {
-    console.error('Error updating user profile:', updateError);
+  } catch (err: any) {
+    console.warn('[AUTH] Failed to sync user record:', err.message);
   }
 };
 
@@ -110,9 +53,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
         // Get initial session
         const { data: { session } } = await supabase.auth.getSession();
-        if (session?.user) {
-          await syncUserRecord(session.user);
-        }
         setSession(session);
         setLoading(false);
 
@@ -120,11 +60,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         const {
           data: { subscription },
         } = supabase.auth.onAuthStateChange((_event, session) => {
-          if (session?.user) {
-            syncUserRecord(session.user).catch((err) => {
-              console.error('Failed to sync user record:', err);
-            });
-          }
           setSession(session);
         });
 
@@ -155,6 +90,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   }
 
   if (!session) {
+    if (isPublicDemoRoute()) {
+      return <>{children}</>;
+    }
+
     return <Auth />;
   }
 
@@ -174,10 +113,11 @@ const Auth: React.FC = () => {
     setLoading(true);
     setMessage('');
     try {
+      const redirectTo = getAuthRedirectUrl();
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: `${window.location.origin}/`,
+          ...(redirectTo ? { redirectTo } : {}),
         },
       });
       if (error) throw error;
@@ -193,6 +133,8 @@ const Auth: React.FC = () => {
     setMessage('');
 
     try {
+      const redirectTo = getAuthRedirectUrl();
+
       if (mode === 'signup') {
         // 2. Pass metadata during sign up
         const { data, error } = await supabase.auth.signUp({
@@ -201,8 +143,8 @@ const Auth: React.FC = () => {
           options: {
             data: {
               full_name: fullName, // This saves to auth.users metadata
-              emailRedirectTo: `${window.location.origin}/`,
             },
+            ...(redirectTo ? { emailRedirectTo: redirectTo } : {}),
           },
         });
 

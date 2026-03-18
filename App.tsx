@@ -1,16 +1,22 @@
 //n
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { useNavigate, useLocation, Routes, Route } from 'react-router-dom';
-import { ChatState, ChatNode, Message, SendMessageOptions } from './types';
+import { ChatState, ChatNode, GenerationStatus, Message, ModelOption, SendMessageOptions } from './types';
 import { ChatView, BranchMetadata } from './components/ChatView';
+import { DemoPage } from './components/DemoPage';
+import { FirstRunOnboardingModal } from './components/FirstRunOnboardingModal';
 import { NodeView } from './components/NodeView';
 import { ProfileView } from './components/ProfileView';
+import { ToastViewport, ToastItem } from './components/ToastViewport';
 import { useTheme } from './src/contexts/ThemeContext';
 //import { generateResponse, generateTitle } from './services/geminiService';
-import { dbService } from './services/dbService';
-import { initSupabase } from './services/supabaseClient';
-import { generateResponseOpenAI } from './services/openaiService';
-import { generateResponse, generateTitle, ResponseStreamDelta } from './services/openRouterService';
+import { dbService, SubscriptionInfo, UsageStatus, UserProfile } from './services/dbService';
+import { initSupabase, supabase } from './services/supabaseClient';
+import { ApiRequestError, generateBranchLabel, generateResponse, generateTitle, ResponseStreamDelta } from './services/openRouterService';
+import { DEFAULT_FREE_MODEL_ID, getFirstAvailableModelId, normalizeTier } from './services/modelCatalog';
+import { getFallbackModelCatalog } from './services/openRouterModels';
+import { cancelProSubscription, openProUpgrade, resumeProSubscription } from './services/billingService';
+import { hasSeenFirstRunOnboarding, markFirstRunOnboardingSeen } from './services/onboardingService';
 interface Conversation {
   id: string;
   nodes: Record<string, ChatNode>;
@@ -45,15 +51,38 @@ const formatCapLine = (label: string, spend: any, limit: any) => {
   return `${label}: ${formatUsd(spendNum)} / ${formatUsd(limitNum)} (${pct.toFixed(1)}%) remaining ${formatUsd(remaining)}`;
 };
 
-const logTurnUsage = (turnResult: any) => {
-  if (!turnResult) return;
-  const usage = turnResult.usage;
-  const caps = turnResult.caps;
-  if (!usage) return;
+const logTurnUsage = (
+  turnResult: any,
+  fallbackUsage?: {
+    inputTokens?: number | null;
+    outputTokens?: number | null;
+    reasoningTokens?: number | null;
+  }
+) => {
+  if (!turnResult && !fallbackUsage) return;
+  const usage = turnResult?.usage;
+  const caps = turnResult?.caps;
+  if (!usage && !fallbackUsage) return;
 
-  const inTok = Number(usage.input_tokens ?? 0);
-  const outTok = Number(usage.output_tokens ?? 0);
-  const totalCost = Number(usage.total_cost ?? 0);
+  const inTok = Number(
+    usage?.input_tokens ??
+    usage?.inputTokens ??
+    fallbackUsage?.inputTokens ??
+    0
+  );
+  const outTok = Number(
+    usage?.output_tokens ??
+    usage?.outputTokens ??
+    fallbackUsage?.outputTokens ??
+    0
+  );
+  const reasoningTok = Number(
+    usage?.reasoning_tokens ??
+    usage?.reasoningTokens ??
+    fallbackUsage?.reasoningTokens ??
+    0
+  );
+  const totalCost = Number(usage?.total_cost ?? 0);
 
   const capParts: string[] = [];
   if (caps) {
@@ -62,23 +91,53 @@ const logTurnUsage = (turnResult: any) => {
   }
 
   console.log(
-    `[USAGE] in=${Number.isFinite(inTok) ? inTok : 0} out=${Number.isFinite(outTok) ? outTok : 0} cost=${formatUsd(totalCost)}` +
+    `[USAGE] in=${Number.isFinite(inTok) ? inTok : 0} out=${Number.isFinite(outTok) ? outTok : 0}` +
+    ` think=${Number.isFinite(reasoningTok) ? reasoningTok : 0} cost=${formatUsd(totalCost)}` +
     (caps?.plan ? ` plan=${caps.plan}` : '') +
     (capParts.length ? ` | ${capParts.join(' | ')}` : '')
   );
 };
 
+const toNullableNumber = (value: any) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const mapCapsToUsageStatus = (caps: any): UsageStatus | null => {
+  if (!caps) {
+    return null;
+  }
+
+  return {
+    plan: typeof caps.plan === 'string' && caps.plan.trim() ? normalizeTier(caps.plan) : '',
+    fourHourSpend: toNullableNumber(caps.four_hour_spend ?? caps.four_hour?.spend),
+    fourHourLimit: toNullableNumber(caps.four_hour_limit ?? caps.four_hour?.limit),
+    monthlySpend: toNullableNumber(caps.monthly_spend ?? caps.month?.spend),
+    monthlyLimit: toNullableNumber(caps.monthly_limit ?? caps.month?.limit),
+  };
+};
+
 const App: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const isDemoRoute = location.pathname === '/demo';
   const [conversations, setConversations] = useState<any[]>([]);
   const [fullName, setFullName] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSwitching, setIsSwitching] = useState(false);
   const [email, setEmail] = useState<string | null>(null);
   const [createdAt, setCreatedAt] = useState<string | null>(null);
+  const [userTier, setUserTier] = useState<string>('FREE');
+  const [usageStatus, setUsageStatus] = useState<UsageStatus | null>(null);
+  const [subscriptionInfo, setSubscriptionInfo] = useState<SubscriptionInfo | null>(null);
+  const [upgradeUrl, setUpgradeUrl] = useState<string | null>(null);
+  const [billingActionPending, setBillingActionPending] = useState(false);
+  const [isStartupOnboardingOpen, setIsStartupOnboardingOpen] = useState(false);
+  const [startupOnboardingUserId, setStartupOnboardingUserId] = useState<string | null>(null);
   const [branchLines, setBranchLines] = useState<any[]>([]);
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const [branchSourceOrdinal, setBranchSourceOrdinal] = useState<number | null>(null);
 
   const toggleGroup = (groupName: string) => {
     setCollapsedGroups(prev => ({
@@ -87,6 +146,7 @@ const App: React.FC = () => {
     }));
   };
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
+  const [chatScrollTarget, setChatScrollTarget] = useState<{ nodeId: string; messageOrdinal: number; requestKey: number } | null>(null);
 
   const [workspace, setWorkspace] = useState<ChatState & { branchingFromId: string | null }>({
     nodes: {},
@@ -100,7 +160,9 @@ const App: React.FC = () => {
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatingNodeId, setGeneratingNodeId] = useState<string | null>(null);
-  const [selectedModel, setSelectedModel] = useState("arcee-ai/trinity-large-preview:free");
+  const [generationStatus, setGenerationStatus] = useState<GenerationStatus>({ phase: 'idle' });
+  const [selectedModel, setSelectedModel] = useState(DEFAULT_FREE_MODEL_ID);
+  const [availableModels, setAvailableModels] = useState<ModelOption[]>(() => getFallbackModelCatalog());
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (typeof window !== 'undefined') {
       return window.innerWidth < 768; // Default to closed on mobile
@@ -109,6 +171,22 @@ const App: React.FC = () => {
   });
   const generationRef = React.useRef<any>(null);
 
+  const resetGenerationStatus = useCallback(() => {
+    setGenerationStatus({ phase: 'idle' });
+  }, []);
+
+  const beginGenerationStatus = useCallback((modelId: string, webSearchEnabled: boolean) => {
+    setGenerationStatus({
+      phase: 'requesting',
+      modelId,
+      webSearch: webSearchEnabled,
+    });
+  }, []);
+
+  const markGenerationStreaming = useCallback(() => {
+    setGenerationStatus((prev) => prev.phase === 'idle' ? prev : { ...prev, phase: 'streaming' });
+  }, []);
+
   const stopGeneration = useCallback(async () => {
     if (generationRef.current) {
       await generationRef.current.cancel();
@@ -116,7 +194,67 @@ const App: React.FC = () => {
     }
     setIsGenerating(false);
     setGeneratingNodeId(null);
+    resetGenerationStatus();
+  }, [resetGenerationStatus]);
+
+  const dismissToast = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((toast) => toast.id !== id));
   }, []);
+
+  const pushToast = useCallback((toast: Omit<ToastItem, 'id'>) => {
+    const id = self.crypto.randomUUID();
+    setToasts((prev) => {
+      const next = toast.persist
+        ? prev.filter((entry) => !(entry.persist && entry.title === toast.title))
+        : prev;
+      return [...next, { id, ...toast }];
+    });
+    if (!toast.persist) {
+      window.setTimeout(() => {
+        setToasts((prev) => prev.filter((entry) => entry.id !== id));
+      }, 5200);
+    }
+  }, []);
+
+  const applyUsageStatus = useCallback((status: UsageStatus | null) => {
+    setUsageStatus(status);
+    if (status?.plan) {
+      setUserTier(normalizeTier(status.plan));
+    }
+  }, []);
+
+  const applyUserProfile = useCallback((profile: UserProfile | null) => {
+    if (!profile) {
+      return;
+    }
+
+    setFullName(profile.fullName);
+    setEmail(profile.email || null);
+    setCreatedAt(profile.createdAt || null);
+    setUserTier(normalizeTier(profile.tier || profile.usageStatus?.plan));
+    applyUsageStatus(profile.usageStatus);
+    setSubscriptionInfo(profile.subscription ?? null);
+    setUpgradeUrl(profile.upgradeUrl ?? null);
+  }, [applyUsageStatus]);
+
+  const refreshUserProfile = useCallback(async (force = true) => {
+    const nextProfile = await dbService.fetchUserProfile({ force });
+    applyUserProfile(nextProfile);
+    return nextProfile;
+  }, [applyUserProfile]);
+
+  const dismissFirstRunOnboarding = useCallback(() => {
+    markFirstRunOnboardingSeen(startupOnboardingUserId);
+    setIsStartupOnboardingOpen(false);
+  }, [startupOnboardingUserId]);
+
+  const refreshUsageStatus = useCallback(async () => {
+    const nextUsageStatus = await dbService.fetchUsageStatus();
+    if (nextUsageStatus) {
+      applyUsageStatus(nextUsageStatus);
+    }
+    return nextUsageStatus;
+  }, [applyUsageStatus]);
 
   const groupedConversations = useMemo(() => {
     // 1. Define the buckets
@@ -162,18 +300,21 @@ const App: React.FC = () => {
   // Removed noisy workspace logging (it fired on every streamed delta).
 
   useEffect(() => {
+    if (isDemoRoute) {
+      setIsLoading(false);
+      return;
+    }
+
     const loadSidebar = async () => {
       try {
         await initSupabase(); // Initialize Supabase with config from backend
-        const data = await dbService.fetchConversations();
+        const [data, userProfile] = await Promise.all([
+          dbService.fetchConversations(),
+          dbService.fetchUserProfile(),
+        ]);
         setConversations(data);
-        const userProfile = await dbService.fetchUserProfile();
-
-        if (userProfile) {
-          setFullName(userProfile.fullName);
-          setEmail(userProfile.email || null);
-          setCreatedAt(userProfile.createdAt || null);
-        }
+        setAvailableModels(getFallbackModelCatalog());
+        applyUserProfile(userProfile);
       } catch (err) {
         console.error("Sidebar load failed:", err);
       } finally {
@@ -181,7 +322,99 @@ const App: React.FC = () => {
       }
     };
     loadSidebar();
-  }, []);
+  }, [applyUserProfile, isDemoRoute]);
+
+  useEffect(() => {
+    if (isDemoRoute) {
+      return;
+    }
+
+    const checkoutState = new URLSearchParams(location.search).get('checkout');
+    if (!checkoutState) {
+      return;
+    }
+
+    if (checkoutState === 'success') {
+      pushToast({
+        title: 'Checkout completed',
+        description: 'Stripe is syncing your subscription now. If Pro access does not appear within a few seconds, refresh your profile.',
+        tone: 'success',
+      });
+
+      window.setTimeout(async () => {
+        await refreshUserProfile(true);
+      }, 2500);
+    } else if (checkoutState === 'cancelled') {
+      pushToast({
+        title: 'Checkout cancelled',
+        description: 'No changes were made to your plan.',
+        tone: 'info',
+      });
+    }
+
+    navigate(location.pathname, { replace: true });
+  }, [isDemoRoute, location.pathname, location.search, navigate, pushToast, refreshUserProfile]);
+
+  useEffect(() => {
+    if (isDemoRoute || isLoading) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const syncFirstRunOnboarding = async () => {
+      try {
+        await initSupabase();
+        const { data: { user } } = await supabase.auth.getUser();
+
+        if (cancelled) {
+          return;
+        }
+
+        if (!user) {
+          setStartupOnboardingUserId(null);
+          setIsStartupOnboardingOpen(false);
+          return;
+        }
+
+        setStartupOnboardingUserId(user.id);
+        setIsStartupOnboardingOpen(!hasSeenFirstRunOnboarding(user.id));
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('Startup onboarding check failed:', error);
+        }
+      }
+    };
+
+    void syncFirstRunOnboarding();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isDemoRoute, isLoading]);
+
+  useEffect(() => {
+    if (!availableModels.length) {
+      return;
+    }
+
+    if (!availableModels.some((model) => model.id === selectedModel)) {
+      setSelectedModel(availableModels[0].id);
+      return;
+    }
+
+    const selectedModelEntry = availableModels.find((model) => model.id === selectedModel);
+    if (!selectedModelEntry) {
+      return;
+    }
+
+    if (!selectedModelEntry.isPremium || normalizeTier(userTier) !== 'FREE') {
+      return;
+    }
+
+    const fallbackModel = availableModels.find((model) => !model.isPremium) ?? { id: getFirstAvailableModelId(userTier) };
+    setSelectedModel(fallbackModel.id);
+  }, [availableModels, selectedModel, userTier]);
 
 
 
@@ -202,6 +435,184 @@ const App: React.FC = () => {
     }
     return path;
   }, [workspace.nodes]);
+
+  const mapNodeHistoryForModel = useCallback((path: ChatNode[]) => (
+    path.flatMap((node) =>
+      [...node.messages]
+        .sort((a, b) => a.ordinal - b.ordinal)
+        .map((message) => ({
+          role: message.role === 'model' ? 'assistant' : 'user',
+          content: message.content,
+        }))
+    )
+  ), []);
+
+  const buildSelectionBranchContext = useCallback((branchParentId: string | null, metadata?: BranchMetadata) => {
+    if (!branchParentId || metadata?.triggerSource !== 'selection' || !metadata.selectionText?.trim()) {
+      return null;
+    }
+
+    const sourceNodeId = metadata.sourceNodeId || branchParentId;
+    const sourceOrdinal = typeof metadata.sourceMessageOrdinal === 'number' ? metadata.sourceMessageOrdinal : null;
+    const parentHistory = getFullHistoryPath(branchParentId);
+
+    const leadingUserPrompts = parentHistory.flatMap((node) => {
+      const sortedMessages = [...node.messages].sort((a, b) => a.ordinal - b.ordinal);
+      const cutoffOrdinal = node.id === sourceNodeId && sourceOrdinal != null
+        ? sourceOrdinal
+        : Number.POSITIVE_INFINITY;
+
+      return sortedMessages
+        .filter((message) => message.role === 'user' && message.ordinal <= cutoffOrdinal)
+        .map((message) => message.content.trim())
+        .filter(Boolean);
+    });
+
+    const contextSections = [
+      'Use only this branch context from the selected text below when answering the next prompt.',
+      metadata.headingPath?.length
+        ? `Closest markdown heading path:\n${metadata.headingPath.map((heading, index) => `${index + 1}. ${heading}`).join('\n')}`
+        : null,
+      `Selected excerpt:\n"""${metadata.selectionText.trim()}"""`,
+      leadingUserPrompts.length
+        ? `User prompts that led here:\n${leadingUserPrompts.map((prompt, index) => `${index + 1}. ${prompt}`).join('\n')}`
+        : null,
+      'Do not assume any other assistant context outside of this excerpt unless it is explicitly implied by the user prompts above.',
+    ].filter(Boolean);
+
+    return [{
+      role: 'user' as const,
+      content: contextSections.join('\n\n'),
+    }];
+  }, [getFullHistoryPath]);
+
+  const handleUpgradeToPro = useCallback(async () => {
+    try {
+      await openProUpgrade();
+    } catch (error) {
+      if (error instanceof ApiRequestError && error.status === 409 && error.data?.code === 'SUBSCRIPTION_EXISTS') {
+        await refreshUserProfile(true);
+        pushToast({
+          title: 'Subscription already active',
+          description: error.message,
+          tone: 'info',
+        });
+        return;
+      }
+
+      pushToast({
+        title: 'Checkout unavailable',
+        description: error instanceof Error ? error.message : 'Could not open Stripe checkout right now.',
+        tone: 'error',
+      });
+    }
+  }, [pushToast, refreshUserProfile]);
+
+  const handleCancelSubscription = useCallback(async () => {
+    if (typeof window !== 'undefined' && !window.confirm('Cancel renewal at the end of your current billing period?')) {
+      return;
+    }
+
+    setBillingActionPending(true);
+    try {
+      await cancelProSubscription();
+      await refreshUserProfile(true);
+      pushToast({
+        title: 'Subscription updated',
+        description: 'Auto-renew is now off. Your access will continue until the end of the current billing period.',
+        tone: 'success',
+      });
+    } catch (error) {
+      pushToast({
+        title: 'Could not update subscription',
+        description: error instanceof Error ? error.message : 'Stripe could not update the subscription right now.',
+        tone: 'error',
+      });
+    } finally {
+      setBillingActionPending(false);
+    }
+  }, [pushToast, refreshUserProfile]);
+
+  const handleResumeSubscription = useCallback(async () => {
+    setBillingActionPending(true);
+    try {
+      await resumeProSubscription();
+      await refreshUserProfile(true);
+      pushToast({
+        title: 'Subscription resumed',
+        description: 'Auto-renew is back on for this subscription.',
+        tone: 'success',
+      });
+    } catch (error) {
+      pushToast({
+        title: 'Could not resume subscription',
+        description: error instanceof Error ? error.message : 'Stripe could not resume the subscription right now.',
+        tone: 'error',
+      });
+    } finally {
+      setBillingActionPending(false);
+    }
+  }, [pushToast, refreshUserProfile]);
+
+  const describeApiError = useCallback((error: unknown) => {
+    if (!(error instanceof ApiRequestError)) {
+      return {
+        title: 'Request failed',
+        description: error instanceof Error ? error.message : 'Something went wrong while contacting the model.',
+        tone: 'error' as const,
+      };
+    }
+
+    if (error.status === 402) {
+      const status = mapCapsToUsageStatus(error.data);
+      if (status) {
+        applyUsageStatus(status);
+      }
+
+      const isFourHour = error.data?.reason === 'FOUR_HOUR_LIMIT';
+      const isMonthly = error.data?.reason === 'MONTHLY_LIMIT';
+
+      return {
+        title: isFourHour ? '4-hour quota reached' : isMonthly ? 'Monthly quota reached' : 'Usage limit reached',
+        description: isFourHour
+          ? 'Try again in 4 hours, or go Pro.'
+          : isMonthly
+            ? 'Try again when your monthly quota resets, or go Pro.'
+            : 'Try again later, or go Pro.',
+        tone: 'info' as const,
+        persist: true,
+        action: { label: 'Go Pro', onClick: handleUpgradeToPro },
+      };
+    }
+
+    if (error.status === 403 && error.data?.code === 'PLAN_MODEL_LOCKED') {
+      const nextTier = normalizeTier(error.data?.current_plan);
+      setUserTier(nextTier);
+      return {
+        title: 'Pro model only',
+        description: nextTier === 'FREE'
+          ? 'That model is available on Pro. Switch to a free model such as Trinity Large or Gemini 3 Flash, or upgrade your plan.'
+          : error.message,
+        tone: 'info' as const,
+        persist: true,
+        action: { label: 'Go Pro', onClick: handleUpgradeToPro },
+      };
+    }
+
+    if (error.status === 404 && error.data?.code === 'WEB_SEARCH_ROUTE_MISSING') {
+      return {
+        title: 'Web search unavailable',
+        description: error.data?.error || 'The backend needs the newer OpenRouter Responses route before web search can run.',
+        tone: 'info' as const,
+      };
+    }
+
+    return {
+      title: `Request failed (${error.status})`,
+      description: error.data?.error || error.message,
+      tone: 'error' as const,
+    };
+  }, [applyUsageStatus, handleUpgradeToPro]);
 
   const activeMessages = useMemo(() => {
     // History is the full set of messages in nodes leading up to current
@@ -243,6 +654,37 @@ const App: React.FC = () => {
     });
   }, []);
 
+  const applyAssistantMetadata = useCallback((nodeId: string, messageTimestamp: number, citations?: Message['citations']) => {
+    if (!citations?.length) {
+      return;
+    }
+
+    setWorkspace(prev => {
+      const node = prev.nodes[nodeId];
+      if (!node) return prev;
+
+      const updatedMessages = [...node.messages];
+      const lastMsg = updatedMessages[updatedMessages.length - 1];
+
+      if (lastMsg?.role !== 'model' || lastMsg.timestamp !== messageTimestamp) {
+        return prev;
+      }
+
+      updatedMessages[updatedMessages.length - 1] = {
+        ...lastMsg,
+        citations
+      };
+
+      return {
+        ...prev,
+        nodes: {
+          ...prev.nodes,
+          [nodeId]: { ...node, messages: updatedMessages }
+        }
+      };
+    });
+  }, []);
+
   const generateHierarchicalLabel = (parentId: string | null, nodes: Record<string, ChatNode>): string => {
     if (!parentId) return "1";
     const parent = nodes[parentId];
@@ -259,7 +701,7 @@ const App: React.FC = () => {
     return endsWithLetter ? `${parentId}.${siblingsCount + 1}` : `${parentId}.${String.fromCharCode(97 + siblingsCount)}`;
   };
 
-  const handleReportBug = async () => {
+  const handleReportBug = useCallback(async () => {
     let description = prompt("Describe the bug (what happened?):");
     if (!description) return;
 
@@ -273,14 +715,22 @@ const App: React.FC = () => {
       }, null, 2);
 
       await dbService.reportBug(description, debugInfo);
-      alert("Bug reported! Thanks for helping.");
+      pushToast({
+        title: 'Bug report sent',
+        description: 'Thanks. I saved the report with your current workspace context.',
+        tone: 'success',
+      });
     } catch (err) {
-      alert("Failed to send report. Irony.");
       console.error(err);
+      pushToast({
+        title: 'Bug report failed',
+        description: err instanceof Error ? err.message : 'The report could not be submitted right now.',
+        tone: 'error',
+      });
     }
-  };
+  }, [pushToast, workspace.currentNodeId]);
 
-  const handleDeleteConversation = async (convId: string, e: React.MouseEvent) => {
+  const handleDeleteConversation = useCallback(async (convId: string, e: React.MouseEvent) => {
     e.stopPropagation(); // Prevent selecting the conversation when clicking delete
 
     if (confirm("Delete this conversation? This action cannot be undone.")) {
@@ -297,6 +747,7 @@ const App: React.FC = () => {
             viewMode: 'chat',
             branchingFromId: null,
           });
+          setBranchSourceOrdinal(null);
         }
 
         // Refresh the sidebar
@@ -304,10 +755,14 @@ const App: React.FC = () => {
         setConversations(updatedConvs);
       } catch (err) {
         console.error("Delete failed:", err);
-        alert("Failed to delete conversation");
+        pushToast({
+          title: 'Delete failed',
+          description: err instanceof Error ? err.message : 'The conversation could not be deleted.',
+          tone: 'error',
+        });
       }
     }
-  };
+  }, [activeConvId, pushToast]);
 
   const handleSelectConversation = async (id: string | null) => {
     // Auto-collapse sidebar on mobile when selecting a chat
@@ -331,6 +786,7 @@ const App: React.FC = () => {
         viewMode: 'chat',
         branchingFromId: null,
       });
+      setBranchSourceOrdinal(null);
       setIsSwitching(false);
       return;
     }
@@ -346,6 +802,7 @@ const App: React.FC = () => {
         viewMode: 'chat',
         branchingFromId: null,
       });
+      setBranchSourceOrdinal(null);
       setBranchLines(loadedBranchLines);
     } catch (err) {
       console.error("Hydration failed:", err);
@@ -354,17 +811,22 @@ const App: React.FC = () => {
     }
   };
 
-  const handleSendMessage = async (text: string, files: File[], branchMetadata?: BranchMetadata, thinking?: boolean, options?: SendMessageOptions) => {
+  const handleSendMessage = useCallback(async (text: string, files: File[], branchMetadata?: BranchMetadata, thinking?: boolean, options?: SendMessageOptions) => {
     if (isGenerating || (!text.trim() && files.length === 0)) return;
-    const perfStart = performance.now();
     setIsGenerating(true);
     let currentConvId = activeConvId;
     const isNewConversation = !currentConvId;
     const timestamp = Date.now();
     const effectiveBranchParentId = options?.branchParentId ?? workspace.branchingFromId;
+    const effectiveBranchSourceOrdinal = options?.branchSourceOrdinal ?? branchSourceOrdinal;
     const isBranching = !!effectiveBranchParentId;
     const modelForTurn = options?.modelId ?? selectedModel;
-    const contextMode = options?.contextMode ?? 'inherit';
+    const contextMode = options?.contextMode ?? (branchMetadata?.triggerSource === 'selection' ? 'selection' : 'inherit');
+    const previousWorkspace = workspace;
+    const previousBranchLines = branchLines;
+    const previousActiveConvId = activeConvId;
+    const previousBranchSourceOrdinal = branchSourceOrdinal;
+    beginGenerationStatus(modelForTurn, Boolean(options?.webSearch?.enabled));
 
     // 1. GENERATE IDS ON CLIENT (The "Forever" IDs)
     // We use crypto.randomUUID() to generate a real UUID v4 immediately.
@@ -407,7 +869,10 @@ const App: React.FC = () => {
             timestamp: timestamp,
             childrenIds: [],
             isBranch: isBranching,
-            branchMessageId: branchMetadata?.messageId
+            branchMessageId: branchMetadata?.messageId ?? (isBranching && capturedParentId && effectiveBranchSourceOrdinal != null ? `${capturedParentId}:${effectiveBranchSourceOrdinal}` : null),
+            branchBlockIndex: branchMetadata?.blockIndex ?? null,
+            branchRelativeYInBlock: branchMetadata?.relativeYInBlock ?? null,
+            branchMsgRelativeY: branchMetadata?.msgRelativeY ?? (isBranching ? 0.5 : null),
           }
         };
 
@@ -428,6 +893,7 @@ const App: React.FC = () => {
           branchingFromId: null
         };
       });
+      setBranchSourceOrdinal(null);
 
       // MAGIC: Save the line coordinates so the UI can draw the blue line
       if (branchMetadata) {
@@ -456,23 +922,12 @@ const App: React.FC = () => {
       let aiContext;
       if (contextMode === 'none') {
         aiContext = [];
+      } else if (contextMode === 'selection') {
+        aiContext = buildSelectionBranchContext(capturedParentId, branchMetadata) ?? [];
       } else if (isNewConversation || isBranching) {
-        const parentHistory = getFullHistoryPath(capturedParentId);
-        // Map to standard OpenRouter format
-        aiContext = parentHistory.flatMap(n =>
-          n.messages.map(m => ({
-            role: m.role === 'model' ? 'assistant' : 'user', // Normalize 'model' -> 'assistant'
-            content: m.content
-          }))
-        );
+        aiContext = mapNodeHistoryForModel(getFullHistoryPath(capturedParentId));
       } else {
-        const historyPath = getFullHistoryPath(targetNodeId);
-        aiContext = historyPath.flatMap(n =>
-          n.messages.map(m => ({
-            role: m.role === 'model' ? 'assistant' : 'user',
-            content: m.content
-          }))
-        );
+        aiContext = mapNodeHistoryForModel(getFullHistoryPath(targetNodeId));
       }
 
       // Call Unified OpenRouter Service
@@ -480,8 +935,11 @@ const App: React.FC = () => {
         text,
         aiContext as any,
         files,
-        selectedModel,
-        thinking
+        modelForTurn,
+        thinking,
+        {
+          webSearch: options?.webSearch
+        }
       );
 
       generationRef.current = result;
@@ -512,8 +970,14 @@ const App: React.FC = () => {
       });
 
       // Process ModelResult Stream
+      let hasSeenStreamDelta = false;
       try {
         for await (const delta of result.getDeltaStream()) {
+          if (!hasSeenStreamDelta && (delta.text || delta.reasoning)) {
+            hasSeenStreamDelta = true;
+            markGenerationStreaming();
+          }
+
           if (delta.text) {
             fullResponse += delta.text;
           }
@@ -537,8 +1001,11 @@ const App: React.FC = () => {
 
       setIsGenerating(false);
       setGeneratingNodeId(null);
+      resetGenerationStatus();
       generationRef.current = null;
       const usage = result.getUsage?.();
+      const responseMetadata = result.getMetadata?.();
+      applyAssistantMetadata(targetNodeId, aiMsgTimestamp, responseMetadata?.citations);
 
       // ... (Continue to 5. DATABASE SYNC as before) ...
 
@@ -567,6 +1034,12 @@ const App: React.FC = () => {
             branch_block_index: branchMetadata.blockIndex,
             branch_relative_y_in_block: branchMetadata.relativeYInBlock,
             branch_msg_relative_y: branchMetadata.msgRelativeY,
+          } : isBranching && capturedParentId && effectiveBranchSourceOrdinal != null ? {
+            branch_message_id: `${capturedParentId}:${effectiveBranchSourceOrdinal}`,
+            branch_msg_relative_y: 0.5,
+          } : isBranching ? {
+            // Generic branch button: anchor from the parent node center in NodeView.
+            branch_msg_relative_y: 0.5,
           } : {})
         });
       }
@@ -584,12 +1057,18 @@ const App: React.FC = () => {
         model_message: {
           content: fullResponse,
           thinkingTrace,
+          citations: responseMetadata?.citations,
           ordinal: aiMsg.ordinal
         }
       });
 
       if (import.meta.env.DEV) {
-        logTurnUsage(turnResult);
+        logTurnUsage(turnResult, usage);
+      }
+
+      const latestUsageStatus = mapCapsToUsageStatus(turnResult?.caps);
+      if (latestUsageStatus) {
+        applyUsageStatus(latestUsageStatus);
       }
 
       // Update Pointers
@@ -614,7 +1093,11 @@ const App: React.FC = () => {
       // no-op: keep console clean
 
       if (isNewConversation || isBranching) {
-        generateTitle(text, fullResponse, selectedModel).then(async (llmTitle) => {
+        const labelPromise = isNewConversation
+          ? generateTitle(text, fullResponse, modelForTurn)
+          : generateBranchLabel(text, fullResponse, modelForTurn);
+
+        labelPromise.then(async (llmTitle) => {
           try {
             // no-op: keep console clean
 
@@ -658,12 +1141,39 @@ const App: React.FC = () => {
 
     } catch (err: any) {
       console.error("Message Failure:", err);
-      alert("Something went wrong: " + (err as Error).message);
+      setWorkspace(previousWorkspace);
+      setBranchLines(previousBranchLines);
+      setActiveConvId(previousActiveConvId);
+      setBranchSourceOrdinal(previousBranchSourceOrdinal);
       setIsGenerating(false);
       setGeneratingNodeId(null);
+      resetGenerationStatus();
       generationRef.current = null;
+      pushToast(describeApiError(err));
+      if (err instanceof ApiRequestError && err.status === 402) {
+        void refreshUsageStatus();
+      }
     }
-  };
+  }, [
+    activeConvId,
+    applyAssistantDelta,
+    applyAssistantMetadata,
+    applyUsageStatus,
+    beginGenerationStatus,
+    branchLines,
+    branchSourceOrdinal,
+    buildSelectionBranchContext,
+    describeApiError,
+    getFullHistoryPath,
+    isGenerating,
+    markGenerationStreaming,
+    mapNodeHistoryForModel,
+    pushToast,
+    resetGenerationStatus,
+    refreshUsageStatus,
+    selectedModel,
+    workspace,
+  ]);
 
 
   const handleSendMessageToNode = useCallback(async (nodeId: string, text: string, files: File[], thinking?: boolean, options?: SendMessageOptions) => {
@@ -673,11 +1183,11 @@ const App: React.FC = () => {
     if (isGenerating || !text.trim()) return;
     setIsGenerating(true);
     setGeneratingNodeId(nodeId);
-    const perfStart = performance.now();
 
     const targetNodeId = nodeId;
     const node = workspace.nodes[nodeId];
     if (!node) { setIsGenerating(false); setGeneratingNodeId(null); return; }
+    const previousMessages = [...node.messages];
 
     const currentMessages = node.messages;
     const timestamp = Date.now();
@@ -698,20 +1208,22 @@ const App: React.FC = () => {
     try {
       // Build context for this node's full history path
       const modelForTurn = options?.modelId ?? selectedModel;
+      beginGenerationStatus(modelForTurn, Boolean(options?.webSearch?.enabled));
       const contextMode = options?.contextMode ?? 'inherit';
       const historyPath = getFullHistoryPath(targetNodeId);
       const aiContext = contextMode === 'none'
         ? []
-        : historyPath.flatMap(n =>
-          n.messages.map(m => ({ role: m.role === 'model' ? 'assistant' : 'user', content: m.content }))
-        );
+        : mapNodeHistoryForModel(historyPath);
 
       const result = await generateResponse(
         text,
         aiContext as any,
         files,
         modelForTurn,
-        thinking
+        thinking,
+        {
+          webSearch: options?.webSearch
+        }
       );
 
       generationRef.current = result;
@@ -727,8 +1239,14 @@ const App: React.FC = () => {
         return { ...prev, nodes: { ...prev.nodes, [targetNodeId]: { ...n, messages: [...n.messages, aiMsg] } } };
       });
 
+      let hasSeenStreamDelta = false;
       try {
         for await (const delta of result.getDeltaStream()) {
+          if (!hasSeenStreamDelta && (delta.text || delta.reasoning)) {
+            hasSeenStreamDelta = true;
+            markGenerationStreaming();
+          }
+
           if (delta.text) {
             fullResponse += delta.text;
           }
@@ -752,8 +1270,11 @@ const App: React.FC = () => {
 
       setIsGenerating(false);
       setGeneratingNodeId(null);
+      resetGenerationStatus();
       generationRef.current = null;
       const usage = result.getUsage?.();
+      const responseMetadata = result.getMetadata?.();
+      applyAssistantMetadata(targetNodeId, aiMsgTimestamp, responseMetadata?.citations);
 
       // Save messages + usage accounting to DB
       const turnResult = await dbService.saveCompletedTurn({
@@ -768,22 +1289,65 @@ const App: React.FC = () => {
         model_message: {
           content: fullResponse,
           thinkingTrace,
+          citations: responseMetadata?.citations,
           ordinal: aiMsg.ordinal
         }
       });
 
       if (import.meta.env.DEV) {
-        logTurnUsage(turnResult);
+        logTurnUsage(turnResult, usage);
+      }
+
+      const latestUsageStatus = mapCapsToUsageStatus(turnResult?.caps);
+      if (latestUsageStatus) {
+        applyUsageStatus(latestUsageStatus);
       }
 
       // no-op: keep console clean
     } catch (err: any) {
       console.error('Mini chat send failed:', err);
+      setWorkspace(prev => {
+        const currentNode = prev.nodes[targetNodeId];
+        if (!currentNode) {
+          return prev;
+        }
+
+        return {
+          ...prev,
+          nodes: {
+            ...prev.nodes,
+            [targetNodeId]: {
+              ...currentNode,
+              messages: previousMessages,
+            }
+          }
+        };
+      });
       setIsGenerating(false);
       setGeneratingNodeId(null);
+      resetGenerationStatus();
       generationRef.current = null;
+      pushToast(describeApiError(err));
+      if (err instanceof ApiRequestError && err.status === 402) {
+        void refreshUsageStatus();
+      }
     }
-  }, [applyAssistantDelta, isGenerating, workspace.nodes, getFullHistoryPath, selectedModel]);
+  }, [
+    applyAssistantDelta,
+    applyAssistantMetadata,
+    applyUsageStatus,
+    beginGenerationStatus,
+    describeApiError,
+    getFullHistoryPath,
+    isGenerating,
+    markGenerationStreaming,
+    mapNodeHistoryForModel,
+    pushToast,
+    resetGenerationStatus,
+    refreshUsageStatus,
+    selectedModel,
+    workspace.nodes,
+  ]);
 
   const handleClearAll = () => {
     if (confirm("Purge all topological data from local storage?")) {
@@ -798,25 +1362,47 @@ const App: React.FC = () => {
     return node?.title && node.title !== '...' ? node.title : "Klados-AI Session";
   }, [workspace.nodes, workspace.currentNodeId]);
 
-  const handleNodeSelect = useCallback((id: string) => {
+  const handleNodeSelect = useCallback((id: string, messageOrdinal?: number) => {
+    setChatScrollTarget(
+      typeof messageOrdinal === 'number'
+        ? { nodeId: id, messageOrdinal, requestKey: Date.now() }
+        : null
+    );
+    setBranchSourceOrdinal(null);
     setWorkspace(prev => ({ ...prev, currentNodeId: id, branchingFromId: null, viewMode: 'chat' }));
   }, []);
 
-  const handleNodeBranch = useCallback((id: string) => {
+  const handleNodeBranch = useCallback((id: string, messageOrdinal?: number) => {
+    setChatScrollTarget(null);
+    setBranchSourceOrdinal(typeof messageOrdinal === 'number' ? messageOrdinal : null);
     setWorkspace(p => ({ ...p, branchingFromId: id, currentNodeId: id, viewMode: 'chat' }));
   }, []);
+
+  const branchSourceTitle = useMemo(() => {
+    const branchNode = workspace.branchingFromId ? workspace.nodes[workspace.branchingFromId] : null;
+    return branchNode?.title && branchNode.title !== '...' ? branchNode.title : null;
+  }, [workspace.branchingFromId, workspace.nodes]);
 
 
   return (
     <div className="flex h-screen w-screen bg-[var(--app-bg)] text-[var(--app-text)] overflow-hidden font-inter selection:bg-[var(--accent-color)]/20 selection:text-[var(--app-text)]">
       <Routes>
+        <Route path="/demo" element={<DemoPage />} />
         <Route path="/profile" element={
           <ProfileView
             fullName={fullName}
             email={email}
             createdAt={createdAt}
+            tier={userTier}
+            usageStatus={usageStatus}
+            subscription={subscriptionInfo}
+            upgradeUrl={upgradeUrl}
             onBack={() => navigate('/')}
             onReportBug={handleReportBug}
+            onUpgrade={handleUpgradeToPro}
+            onCancelSubscription={handleCancelSubscription}
+            onResumeSubscription={handleResumeSubscription}
+            billingActionPending={billingActionPending}
           />
         } />
         <Route path="/" element={
@@ -960,7 +1546,7 @@ const App: React.FC = () => {
                           </span>
                           <div className="flex items-center gap-2">
                             <span className="text-[10px] font-black uppercase tracking-wider text-[var(--app-text-muted)]">
-                              Free Plan
+                              {normalizeTier(userTier) === 'PRO' ? 'Pro Plan' : 'Free Plan'}
                             </span>
                           </div>
                         </div>
@@ -1098,13 +1684,24 @@ const App: React.FC = () => {
                     onBranch={handleNodeBranch}
                     isGenerating={isGenerating}
                     generatingNodeId={generatingNodeId}
+                    generationStatus={generationStatus}
                     isBranching={!!workspace.branchingFromId}
-                    onCancelBranch={() => setWorkspace(prev => ({ ...prev, branchingFromId: null }))}
                     currentNodeId={workspace.currentNodeId}
                     currentTitle={currentTitle}
                     selectedModel={selectedModel}
+                    availableModels={availableModels}
                     onModelSelect={setSelectedModel}
                     onStopGeneration={stopGeneration}
+                    scrollTarget={chatScrollTarget}
+                    userTier={userTier}
+                    branchSourceTitle={branchSourceTitle}
+                    onUpgradeRequest={handleUpgradeToPro}
+                    toasts={workspace.viewMode === 'chat' ? toasts : undefined}
+                    onDismissToast={dismissToast}
+                    onCancelBranch={() => {
+                      setBranchSourceOrdinal(null);
+                      setWorkspace(prev => ({ ...prev, branchingFromId: null }));
+                    }}
                   />
                 </div>
               </main>
@@ -1112,6 +1709,14 @@ const App: React.FC = () => {
           </div>
         } />
       </Routes>
+      <FirstRunOnboardingModal
+        isOpen={isStartupOnboardingOpen}
+        fullName={fullName}
+        onClose={dismissFirstRunOnboarding}
+      />
+      {workspace.viewMode !== 'chat' ? (
+        <ToastViewport toasts={toasts} onDismiss={dismissToast} />
+      ) : null}
     </div>
   );
 };

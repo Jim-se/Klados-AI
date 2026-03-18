@@ -3,6 +3,39 @@ import { ChatNode, Message } from '../types';
 import { BranchMetadata } from '../components/ChatView';
 import { API_BASE_URL } from './frontendConfig';
 import { decodeMessageContent, encodeMessageContent } from './messageContent';
+import { normalizeTier } from './modelCatalog';
+
+export interface UsageStatus {
+  plan: string;
+  fourHourSpend: number | null;
+  fourHourLimit: number | null;
+  monthlySpend: number | null;
+  monthlyLimit: number | null;
+}
+
+export interface SubscriptionInfo {
+  status: string | null;
+  currentPeriodEnd: string | null;
+  cancelAtPeriodEnd: boolean;
+  cancelAt: string | null;
+}
+
+export interface UserProfile {
+  fullName: string | null;
+  email: string | null;
+  createdAt: string | undefined;
+  tier: string;
+  usageStatus: UsageStatus | null;
+  upgradeUrl: string | null;
+  subscription: SubscriptionInfo | null;
+}
+
+let hasLoggedMissingUsageStatusRpc = false;
+let profileEndpointUnavailable = false;
+let hasLoggedMissingProfileEndpoint = false;
+let inFlightUserProfilePromise: Promise<UserProfile | null> | null = null;
+let cachedUserProfile: UserProfile | null = null;
+let cachedUserProfileUserId: string | null = null;
 
 /**
  * Helper to get the current user's session token for backend proxy calls
@@ -15,6 +48,40 @@ const getAuthHeaders = async () => {
   };
 };
 
+const normalizeSubscriptionInfo = (profile: any): SubscriptionInfo | null => {
+  const status = typeof profile?.stripe_subscription_status === 'string' && profile.stripe_subscription_status.trim()
+    ? profile.stripe_subscription_status.trim()
+    : null;
+  const currentPeriodEnd = typeof profile?.stripe_current_period_end === 'string' && profile.stripe_current_period_end.trim()
+    ? profile.stripe_current_period_end.trim()
+    : null;
+  const cancelAt = typeof profile?.stripe_cancel_at === 'string' && profile.stripe_cancel_at.trim()
+    ? profile.stripe_cancel_at.trim()
+    : null;
+  const cancelAtPeriodEnd = Boolean(profile?.stripe_cancel_at_period_end);
+
+  if (!status && !currentPeriodEnd && !cancelAt && !cancelAtPeriodEnd) {
+    return null;
+  }
+
+  return {
+    status,
+    currentPeriodEnd,
+    cancelAtPeriodEnd,
+    cancelAt,
+  };
+};
+
+const buildFallbackUserProfile = (user: any, usageStatus: UsageStatus | null): UserProfile => ({
+  fullName: user.user_metadata?.full_name || null,
+  email: user.email ?? null,
+  createdAt: user.created_at,
+  tier: normalizeTier(usageStatus?.plan) || 'FREE',
+  usageStatus,
+  upgradeUrl: null,
+  subscription: null,
+});
+
 export const dbService = {
   async fetchConversations() {
     const response = await fetch(`${API_BASE_URL}/api/db/conversations`, {
@@ -24,42 +91,114 @@ export const dbService = {
     return response.json();
   },
 
-  async fetchUserProfile(): Promise<{ fullName: string | null; email: string | undefined; createdAt: string | undefined } | null> {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return null;
-
+  async fetchUsageStatus(): Promise<UsageStatus | null> {
     try {
-      // Use maybeSingle() to avoid 406 errors if row is missing
-      const { data, error } = await supabase
-        .from('users')
-        .select('full_name')
-        .eq('id', user.id)
-        .maybeSingle();
+      const { data, error } = await supabase.rpc('usage_get_status').single();
 
       if (error) {
-        console.warn('[DB] User profile fetch encountered error:', error.message);
-      }
+        const isMissingRpc =
+          typeof error.message === 'string' &&
+          error.message.includes('Could not find the function public.usage_get_status');
 
-      // If missing, try to "onboard" from metadata
-      let fullName = data?.full_name || null;
-      if (!fullName && user.user_metadata?.full_name) {
-        fullName = user.user_metadata.full_name;
-        // Optionally upsert back to DB so it exists for next time
-        await supabase.from('users').upsert({ id: user.id, full_name: fullName }).select().maybeSingle();
+        if (!isMissingRpc) {
+          console.warn('[DB] Usage status fetch encountered error:', error.message);
+        } else if (!hasLoggedMissingUsageStatusRpc) {
+          console.info('[DB] usage_get_status RPC is not installed yet; continuing without cap data.');
+          hasLoggedMissingUsageStatusRpc = true;
+        }
+        return null;
       }
 
       return {
-        fullName: fullName,
-        email: user.email,
-        createdAt: user.created_at
+        plan: normalizeTier(data?.plan),
+        fourHourSpend: data?.four_hour_spend == null ? null : Number(data.four_hour_spend),
+        fourHourLimit: data?.four_hour_limit == null ? null : Number(data.four_hour_limit),
+        monthlySpend: data?.monthly_spend == null ? null : Number(data.monthly_spend),
+        monthlyLimit: data?.monthly_limit == null ? null : Number(data.monthly_limit),
       };
     } catch (e: any) {
-      console.error('[DB] Profile hydration failed:', e.message);
-      return {
-        fullName: user.user_metadata?.full_name || null,
-        email: user.email,
-        createdAt: user.created_at
-      };
+      console.error('[DB] Usage status hydration failed:', e.message);
+      return null;
+    }
+  },
+
+  invalidateUserProfileCache() {
+    cachedUserProfile = null;
+    cachedUserProfileUserId = null;
+    inFlightUserProfilePromise = null;
+  },
+
+  async fetchUserProfile(options: { force?: boolean } = {}): Promise<UserProfile | null> {
+    const force = Boolean(options.force);
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      this.invalidateUserProfileCache();
+      return null;
+    }
+
+    if (cachedUserProfileUserId && cachedUserProfileUserId !== user.id) {
+      this.invalidateUserProfileCache();
+    }
+
+    if (!force && cachedUserProfile && cachedUserProfileUserId === user.id) {
+      return cachedUserProfile;
+    }
+
+    if (!force && inFlightUserProfilePromise) {
+      return inFlightUserProfilePromise;
+    }
+
+    inFlightUserProfilePromise = (async () => {
+      if (profileEndpointUnavailable) {
+        return buildFallbackUserProfile(user, await this.fetchUsageStatus());
+      }
+
+      try {
+        const [usageStatus, profileRes] = await Promise.all([
+          this.fetchUsageStatus(),
+          fetch(`${API_BASE_URL}/api/user/profile`, {
+            headers: await getAuthHeaders(),
+          }),
+        ]);
+
+        if (!profileRes.ok) {
+          if (profileRes.status === 404) {
+            profileEndpointUnavailable = true;
+            if (!hasLoggedMissingProfileEndpoint) {
+              console.info('[DB] /api/user/profile endpoint is missing; using Supabase user metadata.');
+              hasLoggedMissingProfileEndpoint = true;
+            }
+
+            return buildFallbackUserProfile(user, usageStatus);
+          }
+
+          throw new Error(`Failed to fetch profile (${profileRes.status})`);
+        }
+
+        const profile = await profileRes.json();
+
+        return {
+          fullName: profile?.full_name ?? user.user_metadata?.full_name ?? null,
+          email: profile?.email ?? user.email ?? null,
+          createdAt: profile?.created_at ?? user.created_at,
+          tier: normalizeTier(profile?.tier || usageStatus?.plan),
+          usageStatus,
+          upgradeUrl: typeof profile?.upgrade_url === 'string' && profile.upgrade_url.trim() ? profile.upgrade_url.trim() : null,
+          subscription: normalizeSubscriptionInfo(profile),
+        };
+      } catch (e: any) {
+        console.warn('[DB] Profile hydration failed:', e.message);
+        return buildFallbackUserProfile(user, await this.fetchUsageStatus());
+      }
+    })();
+
+    try {
+      cachedUserProfile = await inFlightUserProfilePromise;
+      cachedUserProfileUserId = user.id;
+      return cachedUserProfile;
+    } finally {
+      inFlightUserProfilePromise = null;
     }
   },
 
@@ -94,6 +233,7 @@ export const dbService = {
               role: m.role as 'user' | 'model',
               content: decodedContent.content,
               thinkingTrace: decodedContent.thinkingTrace,
+              citations: decodedContent.citations,
               timestamp: new Date(m.created_at).getTime(),
               ordinal: m.ordinal,
               ioTokens: Number.isFinite(parsedIoTokens) ? parsedIoTokens : undefined,
@@ -105,7 +245,10 @@ export const dbService = {
         childrenIds: nodesData
           .filter((child: any) => child.parent_id === n.id)
           .map((child: any) => child.id),
-        branchMessageId: n.branch_message_id
+        branchMessageId: n.branch_message_id,
+        branchBlockIndex: n.branch_block_index ?? null,
+        branchRelativeYInBlock: n.branch_relative_y_in_block ?? null,
+        branchMsgRelativeY: n.branch_msg_relative_y ?? null,
       };
     });
 
@@ -156,12 +299,13 @@ export const dbService = {
   },
 
   async createMessage(payload: any) {
-    const { thinkingTrace, ...restPayload } = payload;
+    const { thinkingTrace, citations, ...restPayload } = payload;
     const encodedPayload = {
       ...restPayload,
       content: encodeMessageContent({
         content: payload.content ?? '',
-        thinkingTrace
+        thinkingTrace,
+        citations
       })
     };
 
@@ -186,6 +330,7 @@ export const dbService = {
     model_message: {
       content: string;
       thinkingTrace?: string;
+      citations?: Message['citations'];
       ordinal: number;
     };
   }) {
@@ -207,7 +352,8 @@ export const dbService = {
           ordinal: payload.model_message.ordinal,
           content: encodeMessageContent({
             content: payload.model_message.content ?? '',
-            thinkingTrace: payload.model_message.thinkingTrace
+            thinkingTrace: payload.model_message.thinkingTrace,
+            citations: payload.model_message.citations
           })
         }
       })

@@ -1,11 +1,18 @@
 import React, { useRef, useEffect, useMemo, useState, useCallback } from 'react';
-import { ChatNode, Message, SendMessageOptions } from '../types';
+import { ChatNode, GenerationStatus, Message, ModelOption, SendMessageOptions } from '../types';
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight, vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useTheme } from '../src/contexts/ThemeContext';
 import DOMPurify from 'dompurify';
 import { AttachmentPreviewStrip } from './AttachmentPreviewStrip';
+import { InlineToastStack } from './InlineToastStack';
+import type { ToastItem } from './ToastViewport';
+import {
+  getFallbackModelCatalog,
+  getPreferredWebSearchModel,
+  getResolvedWebSearchModel,
+} from '../services/openRouterModels';
 export interface BranchMetadata {
   messageId: string;
   blockId: string;
@@ -14,6 +21,12 @@ export interface BranchMetadata {
   textSnippet: string;
   msgRelativeY: number;
   targetNodeId?: string;
+  triggerSource?: 'selection' | 'double-click' | 'branch-zone';
+  selectionText?: string;
+  headingPath?: string[];
+  sourceNodeId?: string;
+  sourceMessageOrdinal?: number;
+  sourceMessageRole?: Message['role'];
 }
 
 export interface ChatViewProps {
@@ -22,17 +35,34 @@ export interface ChatViewProps {
   onSendMessageToNode?: (nodeId: string, text: string, files: File[], thinking?: boolean, options?: SendMessageOptions) => void;
   onSelectNode?: (nodeId: string) => void;
   branchLines?: BranchMetadata[];
-  onBranch: (nodeId: string) => void;
+  onBranch: (nodeId: string, messageOrdinal?: number) => void;
   nodes?: Record<string, ChatNode>;
   isGenerating: boolean;
   generatingNodeId?: string | null;
+  generationStatus?: GenerationStatus;
   isBranching?: boolean;
   onCancelBranch?: () => void;
   currentNodeId: string | null;
   currentTitle?: string;
   selectedModel: string;
+  availableModels?: ModelOption[];
   onModelSelect: (modelId: string) => void;
   onStopGeneration?: () => void;
+  scrollTarget?: { nodeId: string; messageOrdinal: number; requestKey: number } | null;
+  userTier?: string | null;
+  branchSourceTitle?: string | null;
+  onUpgradeRequest?: () => void;
+  tutorial?: ChatViewTutorialConfig;
+  toasts?: ToastItem[];
+  onDismissToast?: (id: string) => void;
+}
+
+export interface ChatViewTutorialConfig {
+  miniChatsStartCollapsed?: boolean;
+  onBranchZoneHover?: () => void;
+  onBranchComposerOpen?: () => void;
+  onTextSelection?: (text: string) => void;
+  onMiniChatToggle?: (nodeId: string, collapsed: boolean) => void;
 }
 
 
@@ -45,6 +75,8 @@ interface GhostLabelProps {
   x: number;
   y: number;
 }
+
+const THINKING_PREFERENCE_STORAGE_KEY = 'klados-thinking-enabled';
 
 const BranchGhostLabel: React.FC<{ x: number; y: number }> = ({ x, y }) => (
   <div
@@ -70,6 +102,67 @@ const BranchGhostLabel: React.FC<{ x: number; y: number }> = ({ x, y }) => (
     </div>
   </div>
 );
+
+const ThinkingToggleButton: React.FC<{
+  enabled: boolean;
+  supported: boolean;
+  locked: boolean;
+  onToggle: () => void;
+  compact?: boolean;
+}> = ({ enabled, supported, locked, onToggle, compact = false }) => {
+  const isDisabled = locked || !supported;
+  const title = locked
+    ? 'Thinking is required for this model.'
+    : supported
+      ? (enabled ? 'Turn thinking off' : 'Turn thinking on')
+      : 'This model does not expose thinking traces.';
+
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      disabled={isDisabled}
+      title={title}
+      className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 font-medium transition-all ${
+        enabled
+          ? 'border-amber-200 bg-amber-50 text-amber-700'
+          : 'border-gray-200 bg-gray-50 text-gray-500 hover:bg-gray-100 hover:text-gray-800'
+      } ${isDisabled ? 'cursor-not-allowed opacity-60 hover:bg-inherit hover:text-inherit' : ''} ${compact ? 'text-[12px]' : 'text-xs'}`}
+    >
+      <svg className={`${compact ? 'w-3.5 h-3.5' : 'w-3.5 h-3.5'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 3L4 14h6l-1 7 9-11h-6l1-7z" />
+      </svg>
+      <span>{locked ? 'Thinking On' : enabled ? 'Thinking On' : 'Thinking Off'}</span>
+    </button>
+  );
+};
+
+const getHeadingLevel = (element: HTMLElement | null) => {
+  if (!element) {
+    return null;
+  }
+
+  const match = /^H([1-6])$/i.exec(element.tagName);
+  return match ? Number(match[1]) : null;
+};
+
+const extractHeadingPath = (blocks: HTMLElement[], targetIndex: number) => {
+  const path: string[] = [];
+
+  blocks.slice(0, targetIndex + 1).forEach((block) => {
+    const level = getHeadingLevel(block);
+    const headingText = (block.innerText || block.textContent || '').trim();
+
+    if (!level || !headingText) {
+      return;
+    }
+
+    path.length = level - 1;
+    path[level - 1] = headingText;
+  });
+
+  return path.filter(Boolean);
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 const MarkdownMessage = React.memo(function MarkdownMessage({
@@ -147,11 +240,39 @@ interface BranchComposerProps {
   onSend: (text: string, files: File[]) => void;
   onClose: () => void;
   selectedModel: string;
+  availableModels: ModelOption[];
   onModelSelect: (modelId: string) => void;
+  webSearchEnabled: boolean;
+  onToggleWebSearch: () => void;
+  thinkingEnabled: boolean;
+  thinkingSupported: boolean;
+  thinkingLocked: boolean;
+  onToggleThinking: () => void;
   initialText?: string;
+  userTier?: string | null;
+  onUpgradeRequest?: () => void;
+  isTutorial?: boolean;
 }
 
-const BranchComposer: React.FC<BranchComposerProps & { composerRef: React.RefObject<HTMLDivElement> }> = ({ anchorY, onSend, onClose, selectedModel, onModelSelect, initialText = '', composerRef }) => {
+const BranchComposer: React.FC<BranchComposerProps & { composerRef: React.RefObject<HTMLDivElement> }> = ({
+  anchorY,
+  onSend,
+  onClose,
+  selectedModel,
+  availableModels,
+  onModelSelect,
+  webSearchEnabled,
+  onToggleWebSearch,
+  thinkingEnabled,
+  thinkingSupported,
+  thinkingLocked,
+  onToggleThinking,
+  initialText = '',
+  composerRef,
+  userTier,
+  onUpgradeRequest,
+  isTutorial = false,
+}) => {
   const [text, setText] = useState(initialText);
   const [isExpanded, setIsExpanded] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
@@ -178,7 +299,8 @@ const BranchComposer: React.FC<BranchComposerProps & { composerRef: React.RefObj
     setFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const currentModel = MODELS.find(m => m.id === selectedModel);
+  const isFreeTier = !userTier || userTier.trim().toUpperCase() === 'FREE';
+  const currentModel = availableModels.find((model) => model.id === selectedModel);
 
   return (
     <div
@@ -226,6 +348,7 @@ const BranchComposer: React.FC<BranchComposerProps & { composerRef: React.RefObj
 
             <input
               ref={inputRef}
+              data-demo-branch-input={isTutorial ? 'true' : undefined}
               type="text"
               value={text}
               onChange={(e) => setText(e.target.value)}
@@ -260,18 +383,40 @@ const BranchComposer: React.FC<BranchComposerProps & { composerRef: React.RefObj
 
           {/* Expanded Bottom Row: File & Model Options */}
           {isExpanded && (
-            <div className="flex items-center justify-between pt-3 pb-1.5 px-3 mt-1 border-t border-gray-100 animate-in slide-in-from-top-2 fade-in duration-200">
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                title="Attach files"
-                className="flex items-center gap-1.5 px-3 py-1.5 text-gray-500 hover:text-gray-800 rounded-full transition-all hover:bg-gray-100 border-none text-[12px] font-medium"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                </svg>
-                Attach
-              </button>
+            <div className="flex items-center justify-between gap-2 pt-3 pb-1.5 px-3 mt-1 border-t border-gray-100 animate-in slide-in-from-top-2 fade-in duration-200">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Attach files"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-gray-500 hover:text-gray-800 rounded-full transition-all hover:bg-gray-100 border-none text-[12px] font-medium"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                  </svg>
+                  Attach
+                </button>
+
+                <button
+                  type="button"
+                  onClick={onToggleWebSearch}
+                  className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12px] font-medium transition-all ${webSearchEnabled ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-gray-200 bg-gray-50 text-gray-500 hover:bg-gray-100 hover:text-gray-800'}`}
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.6 9h16.8M3.6 15h16.8M12 3a15.3 15.3 0 010 18M12 3a15.3 15.3 0 000 18" />
+                  </svg>
+                  Web
+                </button>
+
+                <ThinkingToggleButton
+                  enabled={thinkingEnabled}
+                  supported={thinkingSupported}
+                  locked={thinkingLocked}
+                  onToggle={onToggleThinking}
+                  compact
+                />
+              </div>
 
               <div className="relative">
                 <button
@@ -283,25 +428,51 @@ const BranchComposer: React.FC<BranchComposerProps & { composerRef: React.RefObj
                   <svg className="w-3 h-3 text-gray-400 group-hover:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l4-4 4 4m0 6l-4 4-4-4" /></svg>
                 </button>
 
-                {/* Mini Model Menu */}
                 {isModelMenuOpen && (
-                  <div className="absolute top-[calc(100%+8px)] right-0 w-52 max-h-48 overflow-y-auto bg-white border border-gray-200 rounded-xl shadow-xl z-[70] p-1.5 custom-scrollbar">
-                    {MODELS.map(model => (
-                      <button
-                        key={model.id}
-                        type="button"
-                        onClick={() => {
-                          onModelSelect(model.id);
-                          setIsModelMenuOpen(false);
-                        }}
-                        className={`w-full flex justify-between items-center text-left px-2.5 py-2 text-[12px] rounded-lg transition-colors ${selectedModel === model.id ? 'bg-blue-50 text-blue-600 font-medium' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'}`}
-                      >
-                        <span className="truncate">{model.name}</span>
-                        {selectedModel === model.id ? (
-                          <svg className="w-4 h-4 text-blue-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
-                        ) : null}
-                      </button>
-                    ))}
+                  <div className="absolute top-[calc(100%+8px)] right-0 w-56 max-h-52 overflow-y-auto bg-white border border-gray-200 rounded-xl shadow-xl z-[70] p-1.5 custom-scrollbar">
+                    {availableModels
+                      .filter((model) => !webSearchEnabled || model.supportsWebSearch)
+                      .map((model) => {
+                        const isLocked = isFreeTier && model.isPremium;
+
+                        return (
+                        <button
+                          key={model.id}
+                          type="button"
+                          onClick={() => {
+                            if (isLocked) {
+                              setIsModelMenuOpen(false);
+                              onUpgradeRequest?.();
+                              return;
+                            }
+                            onModelSelect(model.id);
+                            setIsModelMenuOpen(false);
+                          }}
+                          className={`w-full flex justify-between items-center gap-3 text-left px-2.5 py-2 text-[12px] rounded-lg transition-colors ${selectedModel === model.id ? 'bg-blue-50 text-blue-600 font-medium' : isLocked ? 'bg-gray-50/70 text-gray-500 cursor-pointer hover:bg-gray-100' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'}`}
+                        >
+                          <span className="truncate">{model.name}</span>
+                          <div className="flex items-center gap-2 shrink-0">
+                            {isLocked ? (
+                              <span className="rounded border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.18em] text-zinc-500">
+                                Pro
+                              </span>
+                            ) : model.isFree ? (
+                              <span className="rounded border border-sky-100 bg-sky-50 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.18em] text-sky-700">
+                                Free
+                              </span>
+                            ) : null}
+                            {model.supportsWebSearch ? (
+                              <span className="rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.18em] text-emerald-700">
+                                Web
+                              </span>
+                            ) : null}
+                            {selectedModel === model.id ? (
+                              <svg className="w-4 h-4 text-blue-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
+                            ) : null}
+                          </div>
+                        </button>
+                        );
+                      })}
                   </div>
                 )}
               </div>
@@ -326,7 +497,7 @@ function useBranchInteraction(
   containerRef: React.RefObject<HTMLDivElement>,
   contentRef: React.RefObject<HTMLDivElement>, // Passed to anchor things to content
   onBranch?: (nodeId: string) => void,
-  onSendMessage?: (text: string, files: File[], branchMetadata?: BranchMetadata) => void,
+  onSendMessage?: (text: string, files: File[], branchMetadata?: BranchMetadata, options?: SendMessageOptions) => void,
   onCancelBranch?: () => void
 ) {
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
@@ -393,6 +564,8 @@ function useBranchInteraction(
     let blockIndex = -1; // <--- MOVED UP HERE!
     let relativeYInBlock = 0;
     let textSnippet = '';
+    const sourceMessageOrdinal = Number(closestMsgEl?.getAttribute('data-message-ordinal') || '-1');
+    const sourceMessageRole = (closestMsgEl?.getAttribute('data-message-role') as Message['role'] | null) || null;
 
     if (closestMsgEl) {
       const mdWrapper = closestMsgEl.querySelector('.md-content');
@@ -418,9 +591,6 @@ function useBranchInteraction(
         if (closestBlock) {
           blockId = `block-${blockIndex}-${closestBlock.tagName.toLowerCase()}`;
           const rect = closestBlock.getBoundingClientRect();
-
-          // ADD THIS LINE:
-          const msgRelativeY = absoluteClickY - closestMsgEl.getBoundingClientRect().top;
 
           const yInside = Math.max(0, Math.min(absoluteClickY - rect.top, rect.height)); relativeYInBlock = rect.height > 0 ? yInside / rect.height : 0;
 
@@ -448,14 +618,21 @@ function useBranchInteraction(
         blockIndex, // <--- ADD THIS
         relativeYInBlock,
         textSnippet,
-        msgRelativeY: absoluteClickY - (closestMsgEl?.getBoundingClientRect().top || 0)
+        msgRelativeY: (() => {
+          if (!closestMsgEl) return 0.5;
+          const msgRect = closestMsgEl.getBoundingClientRect();
+          if (!msgRect.height) return 0.5;
+          const inside = Math.max(0, Math.min(absoluteClickY - msgRect.top, msgRect.height));
+          return inside / msgRect.height;
+        })(),
+        triggerSource: 'branch-zone',
+        sourceNodeId: closestNodeId,
+        sourceMessageOrdinal: Number.isFinite(sourceMessageOrdinal) ? sourceMessageOrdinal : undefined,
+        sourceMessageRole: sourceMessageRole ?? undefined,
       }
     }); setCursor(null);
 
-    if (onBranch && closestNodeId !== 'unknown') {
-      onBranch(closestNodeId);
-    }
-  }, [activeBranch, containerRef, closeBranch, onBranch]);
+  }, [activeBranch, containerRef, closeBranch]);
 
   useEffect(() => {
     if (!activeBranch) return;
@@ -478,14 +655,11 @@ function useBranchInteraction(
 
       setActiveBranch(payload);
       setCursor(null);
-      if (onBranch && payload.nodeId !== 'unknown') {
-        onBranch(payload.nodeId);
-      }
     };
 
     document.addEventListener('open-branch-with-selection', handleSelectionBranch);
     return () => document.removeEventListener('open-branch-with-selection', handleSelectionBranch);
-  }, [onBranch]);
+  }, []);
 
   // ── Submit Logic ──────────────────────────────────────────────────────────
   const handleBranchSubmit = useCallback((text: string, files: File[]) => {
@@ -561,7 +735,9 @@ function useBranchInteraction(
 
     // Call the EXACT same submit function as the main bottom input!
     if (onSendMessage) {
-      onSendMessage(text, files, activeBranch.metadata);
+      onSendMessage(text, files, activeBranch.metadata, {
+        branchParentId: activeBranch.nodeId,
+      });
     }
 
     // 3. Close the floating composer normally (don't trigger onCancelBranch)
@@ -572,37 +748,74 @@ function useBranchInteraction(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-interface ModelOption {
-  id: string;
-  name: string;
-  provider: string;
-  description: string;
-  isPremium: boolean;
-  thinkingOnly?: boolean;
-  supportsThinkingTrace?: boolean;
-  smartLoading?: boolean;
-}
-
-const MODELS: ModelOption[] = [
-  { id: 'arcee-ai/trinity-large-preview:free', name: 'Trinity Large (Free)', provider: 'arcee', description: 'Advanced preview model from Arcee AI', isPremium: false, smartLoading: false },
-  { id: 'openai/gpt-5.3', name: 'GPT 5.3', provider: 'openai', description: 'Next-generation reasoning model with unprecedented scale', isPremium: true, supportsThinkingTrace: true, smartLoading: true },
-  { id: 'openai/gpt-5.2', name: 'GPT 5.2', provider: 'openai', description: 'Highly efficient, ultra-intelligent foundation model', isPremium: true, supportsThinkingTrace: true, smartLoading: true },
-  { id: 'google/gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro', provider: 'google', description: 'Multimodal flagship with advanced logical planning', isPremium: true, smartLoading: true },
-  { id: 'google/gemini-3-flash-preview', name: 'Gemini 3 Flash', provider: 'google', description: 'Ultrafast response with broad knowledge base', isPremium: false, smartLoading: false },
-  { id: 'anthropic/claude-4.6-sonnet', name: 'Claude Sonnet 4.6', provider: 'anthropic', description: 'State-of-the-art coding and creative assistance', isPremium: true, smartLoading: true },
-  { id: 'anthropic/claude-4.6-opus', name: 'Claude Opus 4.6', provider: 'anthropic', description: 'Maximum intelligence for complex scientific tasks', isPremium: true, smartLoading: true },
-  { id: 'moonshot/kimi-k2.5-thinking', name: 'Kimi K2.5 Thinking', provider: 'moonshot', description: 'Extended chain-of-thought processing', isPremium: true, thinkingOnly: true, supportsThinkingTrace: true, smartLoading: true },
-  { id: 'zhipu/glm-5', name: 'GLM 5', provider: 'zhipu', description: 'Advanced bilingual language model', isPremium: true, smartLoading: true },
-];
-
-const isModelLockedForPublicLaunch = (model: ModelOption) => false;
-
 const SMART_MODEL_LOADING_PHRASES = [
   'Mapping the problem space',
   'Running a deeper reasoning pass',
   'Pressure-testing candidate answers',
   'Cross-checking the final response',
 ];
+
+type SystemStatusTone = 'web' | 'loading';
+
+type SystemStatusDisplay = {
+  label: string;
+  detail?: string;
+  showSpinner: boolean;
+  tone: SystemStatusTone;
+};
+
+const SystemStatusIcon: React.FC<{
+  status: SystemStatusDisplay;
+  compact?: boolean;
+}> = ({ status, compact = false }) => {
+  const sizeClass = compact ? 'w-3.5 h-3.5' : 'w-4.5 h-4.5';
+  const colorClass = status.tone === 'web' ? 'text-emerald-500' : 'text-blue-500';
+
+  if (status.showSpinner) {
+    return (
+      <svg className={`${sizeClass} animate-spin shrink-0 ${colorClass}`} fill="none" viewBox="0 0 24 24">
+        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+      </svg>
+    );
+  }
+
+  if (status.tone === 'web') {
+    return (
+      <svg className={`${sizeClass} shrink-0 ${colorClass}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.6 9h16.8M3.6 15h16.8M12 3a15.3 15.3 0 010 18M12 3a15.3 15.3 0 000 18" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg className={`${sizeClass} shrink-0 ${colorClass}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 3L4 14h6l-1 7 9-11h-6l1-7z" />
+    </svg>
+  );
+};
+
+const SystemStatusBadge: React.FC<{
+  status: SystemStatusDisplay;
+  compact?: boolean;
+}> = ({ status, compact = false }) => {
+  const toneClasses = status.tone === 'web'
+    ? 'border-emerald-200/70 bg-emerald-50/80 text-emerald-800'
+    : 'border-blue-200/70 bg-blue-50/80 text-blue-800';
+
+  return (
+    <div className={`inline-flex items-center gap-3 rounded-2xl border px-4 py-2 shadow-sm ${toneClasses} ${compact ? 'px-3 py-2' : ''}`}>
+      <SystemStatusIcon status={status} compact={compact} />
+      <div className="min-w-0">
+        <div className={`font-medium ${compact ? 'text-[11px]' : 'text-sm'}`}>{status.label}</div>
+        {status.detail && (
+          <div className={`truncate opacity-80 ${compact ? 'text-[10px]' : 'text-xs'}`}>{status.detail}</div>
+        )}
+      </div>
+    </div>
+  );
+};
 
 const ProviderIcon = ({ provider, isActive }: { provider: string, isActive: boolean }) => {
   const className = `w-5 h-5 transition-colors ${isActive ? 'text-white' : 'text-zinc-500 group-hover:text-zinc-300'}`;
@@ -638,14 +851,16 @@ interface BranchMiniChatProps {
   uniqueMsgId: string;
   branchNode?: ChatNode;
   isGeneratingThisNode?: boolean;
-  loadingPhrase?: string | null;
-  showSmartLoading?: boolean;
   title?: string;
   onSendMessage?: (text: string, files: File[]) => void;
   onGoToNode?: () => void;
   onStopGeneration?: () => void;
+  composerOverlapKey?: string | null;
   containerRef: React.RefObject<HTMLDivElement>;
   scrollRef: React.RefObject<HTMLDivElement>; // Passed for scroll detection
+  initiallyCollapsed?: boolean;
+  onCollapsedChange?: (collapsed: boolean) => void;
+  isTutorial?: boolean;
 }
 
 const MiniMarkdown: React.FC<{ content: string }> = ({ content }) => {
@@ -740,21 +955,101 @@ const ThinkingTracePanel: React.FC<{
   );
 };
 
+const CitationList: React.FC<{
+  citations?: Message['citations'];
+  compact?: boolean;
+}> = ({ citations, compact = false }) => {
+  const uniqueCitations = useMemo(() => {
+    if (!citations?.length) {
+      return [];
+    }
+
+    const seen = new Set<string>();
+    return citations.filter((citation) => {
+      if (!citation?.url || seen.has(citation.url)) {
+        return false;
+      }
+
+      seen.add(citation.url);
+      return true;
+    });
+  }, [citations]);
+
+  if (uniqueCitations.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className={`flex flex-wrap gap-2 ${compact ? 'mt-2' : 'mt-3'}`}>
+      {uniqueCitations.map((citation) => {
+        let label = citation.title?.trim() || citation.text?.trim() || citation.url;
+
+        try {
+          const hostname = new URL(citation.url).hostname.replace(/^www\./, '');
+          label = citation.title?.trim() || hostname;
+        } catch {
+          // Keep the existing fallback label if URL parsing fails.
+        }
+
+        return (
+          <a
+            key={citation.url}
+            href={citation.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={`inline-flex max-w-full items-center gap-2 rounded-full border border-[var(--border-color)] bg-[var(--sidebar-bg)] px-3 py-1.5 text-[var(--app-text-muted)] transition-all hover:border-[var(--accent-color)]/30 hover:text-[var(--app-text)] ${compact ? 'text-[10px]' : 'text-xs'}`}
+          >
+            <svg className="h-3.5 w-3.5 shrink-0 text-[var(--accent-color)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.6 9h16.8M3.6 15h16.8M12 3a15.3 15.3 0 010 18M12 3a15.3 15.3 0 000 18" />
+            </svg>
+            <span className="truncate">{label}</span>
+          </a>
+        );
+      })}
+    </div>
+  );
+};
+
 const BranchMiniChat: React.FC<BranchMiniChatProps> = ({
-  line, uniqueMsgId, branchNode, isGeneratingThisNode, loadingPhrase, showSmartLoading, title, onSendMessage, onGoToNode, onStopGeneration, containerRef, scrollRef
+  line,
+  uniqueMsgId,
+  branchNode,
+  isGeneratingThisNode,
+  title,
+  onSendMessage,
+  onGoToNode,
+  onStopGeneration,
+  composerOverlapKey,
+  containerRef,
+  scrollRef,
+  initiallyCollapsed = false,
+  onCollapsedChange,
+  isTutorial = false,
 }) => {
   // Position in pixels relative to the container element
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const [input, setInput] = useState('');
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(initiallyCollapsed);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messages = branchNode?.messages ?? [];
   const LINE_WIDTH = 48;
 
   useEffect(() => {
+    onCollapsedChange?.(collapsed);
+  }, [collapsed, onCollapsedChange]);
+
+  useEffect(() => {
+    if (isGeneratingThisNode && collapsed) {
+      setCollapsed(false);
+    }
+  }, [collapsed, isGeneratingThisNode]);
+
+  useEffect(() => {
     const updatePosition = () => {
       const scrollContent = containerRef.current;
-      const msgEl = document.querySelector<HTMLElement>(`[data-message-id="${uniqueMsgId}"]`);
+      const msgEl = document.querySelector<HTMLElement>(`[data-message-id="${uniqueMsgId}"]`)
+        ?? document.querySelector<HTMLElement>(`[data-legacy-message-id="${uniqueMsgId}"]`);
       if (!scrollContent || !msgEl) return;
 
       const mdWrapper = msgEl.querySelector('.md-content');
@@ -768,7 +1063,9 @@ const BranchMiniChat: React.FC<BranchMiniChatProps> = ({
         // Calculate offset relative to the TOP of the scroll content (this is constant regardless of scroll)
         lineTop = (blockRect.top - contentRect.top) + (blockRect.height * line.relativeYInBlock);
       } else {
-        lineTop = (msgRect.top - contentRect.top) + line.msgRelativeY;
+        const raw = Number(line.msgRelativeY ?? 0);
+        const offset = raw >= 0 && raw <= 1 ? msgRect.height * raw : raw;
+        lineTop = (msgRect.top - contentRect.top) + offset;
       }
 
       // Left edge: right side of the message bubble relative to content container
@@ -835,7 +1132,7 @@ const BranchMiniChat: React.FC<BranchMiniChatProps> = ({
     setTimeout(checkOverlap, 100);
 
     return () => scrollEl.removeEventListener('scroll', checkOverlap);
-  }, [scrollRef, collapsed]);
+  }, [scrollRef, collapsed, composerOverlapKey]);
 
   const handleSend = () => {
     if (!input.trim() || !onSendMessage) return;
@@ -866,12 +1163,14 @@ const BranchMiniChat: React.FC<BranchMiniChatProps> = ({
         style={{ transform: 'translateY(-50%)' }}
       >
         <div
+          data-demo-mini-chat={isTutorial ? 'true' : undefined}
           className={`pointer-events-auto flex flex-col bg-white border border-black/[0.04] rounded-3xl shadow-[0_8px_32px_rgba(0,0,0,0.06)] overflow-hidden transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] ${collapsed ? 'w-[240px] h-10' : 'w-[280px] h-[260px]'
             }`}
           onWheel={e => e.stopPropagation()} // keep scroll inside the mini chat
         >
           {/* Header */}
           <div
+            data-demo-mini-chat-header={isTutorial ? 'true' : undefined}
             onClick={() => setCollapsed(!collapsed)}
             className="flex items-center gap-2 px-3 py-2.5 border-b border-black/[0.04] bg-white shrink-0 cursor-pointer hover:bg-gray-50/50 transition-colors group"
           >
@@ -879,12 +1178,6 @@ const BranchMiniChat: React.FC<BranchMiniChatProps> = ({
             <span className="text-[10px] font-bold uppercase tracking-widest text-[#6b7280] truncate flex-1 min-w-0">
               {displayTitle}
             </span>
-            {isGeneratingThisNode && (
-              <svg className="w-3 h-3 animate-spin text-blue-400 shrink-0" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-              </svg>
-            )}
             <div className="flex items-center gap-1">
               {onGoToNode && (
                 <button
@@ -906,16 +1199,6 @@ const BranchMiniChat: React.FC<BranchMiniChatProps> = ({
             </div>
           </div>
 
-          {!collapsed && isGeneratingThisNode && showSmartLoading && loadingPhrase && (
-            <div className="px-3 py-2 border-b border-[var(--border-color)] bg-zinc-50/60 flex items-center gap-2 text-[10px] text-zinc-500">
-              <svg className="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-              </svg>
-              <span className="truncate">{loadingPhrase}</span>
-            </div>
-          )}
-
           {!collapsed && (
             <div className="flex-1 flex flex-col min-h-0 relative">
               {/* Vertical connection line inside chat area */}
@@ -931,30 +1214,29 @@ const BranchMiniChat: React.FC<BranchMiniChatProps> = ({
                       ? 'px-2.5 py-1.5 rounded-2xl bg-white border border-gray-100 shadow-[0_2px_8px_rgba(0,0,0,0.04)] text-gray-800 rounded-tr-sm text-[11.5px]'
                       : 'bg-transparent text-gray-800 pl-6 py-1 text-[11.5px] leading-relaxed w-full'
                       }`}>
-                      {msg.role === 'model' && (
-                        <ThinkingTracePanel
-                          trace={msg.thinkingTrace}
-                          messageId={`${uniqueMsgId}-branch-${i}`}
-                          compact
-                          isStreaming={Boolean(isGeneratingThisNode && i === messages.length - 1 && msg.thinkingTrace)}
-                        />
-                      )}
                       {msg.role === 'user' ? msg.content : (
-                        msg.content
-                          ? <MiniMarkdown content={msg.content} />
-                          : isGeneratingThisNode && i === messages.length - 1
-                            ? showSmartLoading && loadingPhrase
-                              ? <p className="py-1 text-[10px] uppercase tracking-[0.14em] text-zinc-500/80">{loadingPhrase}</p>
-                              : <div className="flex gap-1 py-1"><div className="w-1 h-1 bg-zinc-300 rounded-full animate-bounce" /><div className="w-1 h-1 bg-zinc-300 rounded-full animate-bounce [animation-delay:0.2s]" /><div className="w-1 h-1 bg-zinc-300 rounded-full animate-bounce [animation-delay:0.4s]" /></div>
-                            : null
+                        msg.content ? (
+                          <>
+                            <MiniMarkdown content={msg.content} />
+                            <CitationList citations={msg.citations} compact />
+                          </>
+                        ) : isGeneratingThisNode && i === messages.length - 1
+                          ? <div className="flex gap-1 py-1">
+                            <div className="w-1 h-1 bg-zinc-300 rounded-full animate-bounce" />
+                            <div className="w-1 h-1 bg-zinc-300 rounded-full animate-bounce [animation-delay:0.2s]" />
+                            <div className="w-1 h-1 bg-zinc-300 rounded-full animate-bounce [animation-delay:0.4s]" />
+                          </div>
+                          : null
                       )}
                     </div>
                   </div>
                 ))}
                 {isGeneratingThisNode && messages.length === 0 && (
-                  showSmartLoading && loadingPhrase
-                    ? <div className="py-1 relative z-10 pl-6 text-[10px] uppercase tracking-[0.14em] text-zinc-500/80">{loadingPhrase}</div>
-                    : <div className="flex gap-1 py-1 relative z-10 pl-6"><div className="w-1 h-1 bg-blue-300 rounded-full animate-bounce" /><div className="w-1 h-1 bg-blue-300 rounded-full animate-bounce [animation-delay:0.2s]" /><div className="w-1 h-1 bg-blue-300 rounded-full animate-bounce [animation-delay:0.4s]" /></div>
+                  <div className="flex gap-1 py-1 relative z-10 pl-6">
+                    <div className="w-1 h-1 bg-blue-300 rounded-full animate-bounce" />
+                    <div className="w-1 h-1 bg-blue-300 rounded-full animate-bounce [animation-delay:0.2s]" />
+                    <div className="w-1 h-1 bg-blue-300 rounded-full animate-bounce [animation-delay:0.4s]" />
+                  </div>
                 )}
                 <div ref={messagesEndRef} />
               </div>
@@ -1006,18 +1288,43 @@ export const ChatView: React.FC<ChatViewProps> = ({
   nodes = {},
   isGenerating,
   generatingNodeId,
+  generationStatus,
   isBranching,
   onCancelBranch,
   currentNodeId,
   currentTitle,
   selectedModel,
+  availableModels,
   onModelSelect,
   onStopGeneration,
+  scrollTarget,
+  userTier,
+  branchSourceTitle,
+  onUpgradeRequest,
+  tutorial,
+  toasts,
+  onDismissToast,
 }) => {
   const { mode } = useTheme();
   const [input, setInput] = useState('');
   const [files, setFiles] = useState<File[]>([]);
-  const [selectedTextData, setSelectedTextData] = useState<{ text: string; x: number; y: number; absoluteY: number; isDoubleClick: boolean; messageId: string; nodeId: string; blockId: string; blockIndex: number; relativeYInBlock: number; msgRelativeY: number } | null>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const [selectedTextData, setSelectedTextData] = useState<{
+    text: string;
+    x: number;
+    y: number;
+    absoluteY: number;
+    isDoubleClick: boolean;
+    messageId: string;
+    nodeId: string;
+    blockId: string;
+    blockIndex: number;
+    relativeYInBlock: number;
+    msgRelativeY: number;
+    headingPath: string[];
+    sourceMessageOrdinal: number;
+    sourceMessageRole: Message['role'] | null;
+  } | null>(null);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1059,13 +1366,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
         const messageId = msgEl.getAttribute('data-message-id') || '';
         const nodeId = msgEl.getAttribute('data-node-id') || '';
+        const sourceMessageOrdinal = Number(msgEl.getAttribute('data-message-ordinal') || '-1');
+        const sourceMessageRole = (msgEl.getAttribute('data-message-role') as Message['role'] | null) || null;
         const selectionMidY = rect.top + (rect.height / 2);
         const absoluteY = selectionMidY;
-        const msgRelativeY = selectionMidY - msgEl.getBoundingClientRect().top;
+        const msgRect = msgEl.getBoundingClientRect();
+        const msgRelativeY = msgRect.height
+          ? Math.max(0, Math.min((selectionMidY - msgRect.top) / msgRect.height, 1))
+          : 0.5;
 
         let blockId = 'unknown';
         let blockIndex = -1;
         let relativeYInBlock = 0;
+        let headingPath: string[] = [];
 
         const mdWrapper = msgEl.querySelector('.md-content');
         if (mdWrapper) {
@@ -1092,6 +1405,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             const r = closestBlock.getBoundingClientRect();
             const yInside = Math.max(0, Math.min(absoluteY - r.top, r.height));
             relativeYInBlock = r.height > 0 ? yInside / r.height : 0;
+            headingPath = extractHeadingPath(blocks, blockIndex);
           }
         }
 
@@ -1124,7 +1438,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
           blockIndex,
           relativeYInBlock,
           msgRelativeY,
+          headingPath,
+          sourceMessageOrdinal,
+          sourceMessageRole,
         });
+        tutorial?.onTextSelection?.(selection.toString().trim());
 
         // Rendering the floating panel can cause ReactMarkdown to re-render and collapse the selection.
         // Re-apply the saved range on the next frame so the highlight "sticks".
@@ -1139,7 +1457,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
     document.addEventListener('mouseup', handleMouseUp);
     return () => document.removeEventListener('mouseup', handleMouseUp);
-  }, []);
+  }, [tutorial]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1154,44 +1472,96 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   // Track where the submit came from — only scroll to bottom for 'main'
   const [loadingSource, setLoadingSource] = useState<'main' | 'branch'>('main');
-  const [isThinking, setIsThinking] = useState(false);
+  const [thinkingPreference, setThinkingPreference] = useState<boolean>(() => {
+    if (typeof window === 'undefined') {
+      return false;
+    }
 
-  // 2. ADD THIS: Wrap the branch submit so it flags the source as 'branch'
-  const handleBranchMessage = useCallback((text: string, files: File[], metadata?: BranchMetadata, options?: SendMessageOptions) => {
-    setLoadingSource('branch');
-    if (onSendMessage) onSendMessage(text, files, metadata, isThinking, options);
-  }, [isThinking, onSendMessage]);
+    return window.localStorage.getItem(THINKING_PREFERENCE_STORAGE_KEY) === '1';
+  });
 
-  const {
-    cursor, activeBranch, composerRef, zoneRef,
-    handleMouseMove, handleMouseLeave, handleZoneClick,
-    handleBranchSubmit, closeBranch,
-  } = useBranchInteraction(containerRef, contentRef, onBranch, handleBranchMessage, onCancelBranch); // Passed contentRef
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const [selectedProviderTab, setSelectedProviderTab] = useState('all');
   const [modelSearchQuery, setModelSearchQuery] = useState('');
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const modelMenuRef = useRef<HTMLDivElement>(null);
+  const modelCatalog = useMemo(
+    () => availableModels?.length ? availableModels : getFallbackModelCatalog(),
+    [availableModels]
+  );
+  const isFreeTier = !userTier || userTier.trim().toUpperCase() === 'FREE';
 
-  const providers = ['all', ...Array.from(new Set(MODELS.map(m => m.provider)))];
+  const providers = ['all', ...Array.from(new Set(modelCatalog.map((model) => model.provider)))];
 
   const filteredModels = useMemo(() => {
-    return MODELS.filter(m => {
-      const matchesProvider = selectedProviderTab === 'all' || m.provider === selectedProviderTab;
-      const matchesSearch = m.name.toLowerCase().includes(modelSearchQuery.toLowerCase()) ||
-        m.description.toLowerCase().includes(modelSearchQuery.toLowerCase());
-      return matchesProvider && matchesSearch;
+    return modelCatalog.filter((model) => {
+      const matchesProvider = selectedProviderTab === 'all' || model.provider === selectedProviderTab;
+      const matchesSearch = model.name.toLowerCase().includes(modelSearchQuery.toLowerCase()) ||
+        model.description.toLowerCase().includes(modelSearchQuery.toLowerCase());
+      const matchesCapability = !webSearchEnabled || model.supportsWebSearch;
+      return matchesProvider && matchesSearch && matchesCapability;
     });
-  }, [selectedProviderTab, modelSearchQuery]);
+  }, [modelCatalog, modelSearchQuery, selectedProviderTab, webSearchEnabled]);
 
   const selectedModelConfig = useMemo(
-    () => MODELS.find((model) => model.id === selectedModel),
-    [selectedModel]
+    () => modelCatalog.find((model) => model.id === selectedModel),
+    [modelCatalog, selectedModel]
   );
+  const resolvedWebSearchModel = useMemo(
+    () => getResolvedWebSearchModel(selectedModel, modelCatalog),
+    [modelCatalog, selectedModel]
+  );
+  const requestModelConfig = useMemo(
+    () => generationStatus?.modelId
+      ? modelCatalog.find((model) => model.id === generationStatus.modelId) ?? null
+      : null,
+    [generationStatus?.modelId, modelCatalog]
+  );
+  const activeThinkingModel = useMemo(
+    () => (webSearchEnabled ? (resolvedWebSearchModel ?? selectedModelConfig) : selectedModelConfig),
+    [resolvedWebSearchModel, selectedModelConfig, webSearchEnabled]
+  );
+  const accessibleWebSearchModels = useMemo(
+    () => modelCatalog.filter((model) => model.supportsWebSearch && !(isFreeTier && model.isPremium)),
+    [isFreeTier, modelCatalog]
+  );
+  const webSearchReadyCount = useMemo(
+    () => accessibleWebSearchModels.length,
+    [accessibleWebSearchModels]
+  );
+  const thinkingSupported = Boolean(activeThinkingModel?.thinkingOnly || activeThinkingModel?.supportsThinkingTrace);
+  const thinkingLocked = Boolean(activeThinkingModel?.thinkingOnly);
+  const effectiveThinkingEnabled = thinkingLocked || (thinkingSupported && thinkingPreference);
   const shouldShowSmartLoading = Boolean(isGenerating && selectedModelConfig?.smartLoading);
   const [loadingPhraseIndex, setLoadingPhraseIndex] = useState(0);
   const loadingPhrase = shouldShowSmartLoading
     ? SMART_MODEL_LOADING_PHRASES[loadingPhraseIndex % SMART_MODEL_LOADING_PHRASES.length]
     : null;
+  const systemStatus = useMemo<SystemStatusDisplay | null>(() => {
+    if (!isGenerating || !generationStatus || generationStatus.phase === 'idle') {
+      return null;
+    }
+
+    const activeModel = requestModelConfig ?? activeThinkingModel ?? selectedModelConfig ?? resolvedWebSearchModel;
+    const modelName = activeModel?.name ?? 'the model';
+    const heuristicDetail = shouldShowSmartLoading ? loadingPhrase : undefined;
+
+    if (generationStatus.webSearch) {
+      return {
+        label: generationStatus.phase === 'requesting' ? 'Searching the web' : 'Web search in progress',
+        detail: heuristicDetail ?? `Using ${modelName}`,
+        showSpinner: generationStatus.phase === 'requesting',
+        tone: 'web',
+      };
+    }
+
+    return {
+      label: generationStatus.phase === 'requesting' ? `Loading ${modelName}` : `Preparing ${modelName}`,
+      detail: heuristicDetail ?? (generationStatus.phase === 'requesting' ? 'Waiting for the first streamed tokens' : 'Response is about to appear'),
+      showSpinner: generationStatus.phase === 'requesting',
+      tone: 'loading',
+    };
+  }, [activeThinkingModel, generationStatus, isGenerating, loadingPhrase, requestModelConfig, resolvedWebSearchModel, selectedModelConfig, shouldShowSmartLoading]);
 
   useEffect(() => {
     if (!shouldShowSmartLoading) {
@@ -1226,6 +1596,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
     };
   }, [isModelMenuOpen]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    window.localStorage.setItem(THINKING_PREFERENCE_STORAGE_KEY, thinkingPreference ? '1' : '0');
+  }, [thinkingPreference]);
+
   // Only scroll to bottom when new messages arrive in the MAIN chat node
   useEffect(() => {
     if (loadingSource === 'main' && scrollRef.current && !userHasScrolledUp) {
@@ -1235,19 +1613,48 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   }, [history, loadingSource, userHasScrolledUp]);
 
-  // Force scroll to top when currentNodeId changes (e.g., expanding a branch)
+  // On node/conversation changes, jump to a requested message or default to the latest content.
   useEffect(() => {
     if (scrollRef.current) {
-      isAtBottomRef.current = false;
-      setUserHasScrolledUp(true);
-      // Slight delay to allow DOM to render new history
-      setTimeout(() => {
-        if (scrollRef.current) {
-          scrollRef.current.scrollTop = 0;
+      isAtBottomRef.current = true;
+      setUserHasScrolledUp(false);
+      const timeoutId = window.setTimeout(() => {
+        if (!scrollRef.current) {
+          return;
         }
+
+        if (scrollTarget?.nodeId && typeof scrollTarget.messageOrdinal === 'number') {
+          const targetMessage = Array.from(
+            scrollRef.current.querySelectorAll<HTMLElement>('[data-node-id][data-message-ordinal]')
+          ).find((element) => {
+            return (
+              element.dataset.nodeId === scrollTarget.nodeId &&
+              element.dataset.messageOrdinal === String(scrollTarget.messageOrdinal)
+            );
+          });
+
+          if (targetMessage) {
+            const container = scrollRef.current;
+            const containerRect = container.getBoundingClientRect();
+            const messageRect = targetMessage.getBoundingClientRect();
+
+            // Keep the focused message near the top (below the header fade / padding),
+            // instead of centering it in the viewport.
+            const TOP_PADDING_PX = 120;
+            const delta = messageRect.top - containerRect.top;
+            const nextScrollTop = Math.max(0, container.scrollTop + delta - TOP_PADDING_PX);
+
+            container.scrollTo({ top: nextScrollTop, behavior: 'smooth' });
+            return;
+          }
+        }
+
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
       }, 50);
+
+      return () => window.clearTimeout(timeoutId);
     }
-  }, [currentNodeId]);
+  }, [currentNodeId, scrollTarget?.requestKey]);
 
   // Scroll to bottom while streaming — only for the main node
   useEffect(() => {
@@ -1321,18 +1728,95 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
-  // Sync isThinking with model constraints
+  const handleToggleThinking = useCallback(() => {
+    if (!thinkingSupported || thinkingLocked) {
+      return;
+    }
+
+    setThinkingPreference((prev) => !prev);
+  }, [thinkingLocked, thinkingSupported]);
+
   useEffect(() => {
-    setIsThinking(Boolean(selectedModelConfig?.thinkingOnly || selectedModelConfig?.supportsThinkingTrace));
-  }, [selectedModelConfig]);
+    if (selectedModelConfig) {
+      return;
+    }
+
+    if (modelCatalog[0] && modelCatalog[0].id !== selectedModel) {
+      onModelSelect(modelCatalog[0].id);
+    }
+  }, [modelCatalog, onModelSelect, selectedModel, selectedModelConfig]);
+
+  useEffect(() => {
+    if (!webSearchEnabled || resolvedWebSearchModel || webSearchReadyCount === 0) {
+      return;
+    }
+
+    const fallbackModel = getPreferredWebSearchModel(accessibleWebSearchModels, {
+      preferredModelIds: isFreeTier ? [] : ['google/gemini-3.1-pro-preview'],
+    }) ?? accessibleWebSearchModels[0] ?? getPreferredWebSearchModel(modelCatalog);
+    if (!fallbackModel || fallbackModel.id === selectedModel) {
+      return;
+    }
+
+    onModelSelect(fallbackModel.id);
+  }, [accessibleWebSearchModels, isFreeTier, modelCatalog, onModelSelect, resolvedWebSearchModel, selectedModel, webSearchEnabled, webSearchReadyCount]);
+
+  function resolveModelIdForSend(requestedModelId?: string) {
+    const baseModelId = requestedModelId ?? selectedModel;
+    if (!webSearchEnabled) {
+      return baseModelId;
+    }
+
+    return getResolvedWebSearchModel(baseModelId, modelCatalog)?.id ?? baseModelId;
+  }
+
+  function buildSendOptions(baseOptions?: SendMessageOptions): SendMessageOptions {
+    return {
+      ...baseOptions,
+      modelId: resolveModelIdForSend(baseOptions?.modelId),
+      webSearch: webSearchEnabled ? { enabled: true, maxResults: 5 } : undefined,
+    };
+  }
+
+  const handleBranchMessage = useCallback((text: string, files: File[], metadata?: BranchMetadata, options?: SendMessageOptions) => {
+    setLoadingSource('branch');
+    if (onSendMessage) onSendMessage(text, files, metadata, effectiveThinkingEnabled, buildSendOptions(options));
+  }, [buildSendOptions, effectiveThinkingEnabled, onSendMessage]);
+
+  const {
+    cursor, activeBranch, composerRef, zoneRef,
+    handleMouseMove, handleMouseLeave, handleZoneClick,
+    handleBranchSubmit, closeBranch,
+  } = useBranchInteraction(containerRef, contentRef, onBranch, handleBranchMessage, onCancelBranch);
+
+  useEffect(() => {
+    if (activeBranch) {
+      tutorial?.onBranchComposerOpen?.();
+    }
+  }, [activeBranch, tutorial]);
+
+  useEffect(() => {
+    if (!isBranching || activeBranch) {
+      return;
+    }
+
+    const textarea = composerTextareaRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    textarea.focus({ preventScroll: false });
+    textarea.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [activeBranch, isBranching]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() && files.length === 0 || isGenerating) return;
+    if (webSearchEnabled && !resolvedWebSearchModel) return;
 
     setLoadingSource('main'); // <--- ADD THIS: Flag source as 'main'
 
-    onSendMessage(input, files, undefined, isThinking);
+    onSendMessage(input, files, undefined, effectiveThinkingEnabled, buildSendOptions());
     setInput('');
     setFiles([]);
     setTimeout(() => {
@@ -1341,23 +1825,38 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }, 0);
   };
 
+  const buildStableMessageId = useCallback((nodeId: string, messageOrdinal: number) => {
+    return `${nodeId}:${messageOrdinal}`;
+  }, []);
+
   const historyMessageIds = useMemo(() => {
     const ids = new Set<string>();
+    const flattened: { nodeId: string; msg: Message }[] = [];
     history.forEach((node) => {
-      node.messages.forEach((_, idx) => {
-        ids.add(`${node.id}-${idx}`);
+      node.messages.forEach((msg) => {
+        flattened.push({ nodeId: node.id, msg });
       });
     });
-    return ids;
-  }, [history]);
 
-  const allMessages: { msg: Message, nodeId: string, isLastInNode: boolean }[] = [];
+    flattened.forEach(({ nodeId, msg }, globalIndex) => {
+      ids.add(buildStableMessageId(nodeId, msg.ordinal));
+      // Backwards-compat for older saved branch lines (used global indices).
+      ids.add(`${nodeId}-${globalIndex}`);
+    });
+
+    return ids;
+  }, [buildStableMessageId, history]);
+
+  const allMessages: { msg: Message; nodeId: string; isLastInNode: boolean; stableMessageId: string; legacyMessageId: string }[] = [];
   history.forEach((node) => {
     node.messages.forEach((msg, idx) => {
+      const globalIndex = allMessages.length;
       allMessages.push({
         msg,
         nodeId: node.id,
-        isLastInNode: idx === node.messages.length - 1
+        isLastInNode: idx === node.messages.length - 1,
+        stableMessageId: buildStableMessageId(node.id, msg.ordinal),
+        legacyMessageId: `${node.id}-${globalIndex}`,
       });
     });
   });
@@ -1375,6 +1874,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       {selectedTextData && !activeBranch && (
         <div
           className="text-selection-panel absolute z-[70] translate-x-[-50%] pointer-events-auto"
+          data-demo-selection-panel={tutorial ? 'true' : undefined}
           style={{
             left: selectedTextData.x,
             top: selectedTextData.y - 48, // Tightly above the selection box (48px accounts for the button height and padding)
@@ -1394,7 +1894,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 blockIndex: selectedTextData.blockIndex,
                 relativeYInBlock: selectedTextData.relativeYInBlock,
                 textSnippet: trimmed,
-                msgRelativeY: selectedTextData.msgRelativeY
+                msgRelativeY: selectedTextData.msgRelativeY,
+                triggerSource: selectedTextData.isDoubleClick ? 'double-click' : 'selection',
+                selectionText: trimmed,
+                headingPath: selectedTextData.headingPath,
+                sourceNodeId: selectedTextData.nodeId,
+                sourceMessageOrdinal: selectedTextData.sourceMessageOrdinal,
+                sourceMessageRole: selectedTextData.sourceMessageRole ?? undefined,
               };
 
               if (selectedTextData.isDoubleClick) {
@@ -1402,7 +1908,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
                 handleBranchMessage(prompt, [], metadata, {
                   branchParentId: selectedTextData.nodeId,
-                  modelId: 'google/gemini-3-flash',
+                  modelId: 'google/gemini-3-flash-preview',
                   contextMode: 'none'
                 });
               } else {
@@ -1456,7 +1962,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
             className={`absolute top-0 h-full z-0 ${!activeBranch && allMessages.length > 0 ? 'cursor-none' : 'cursor-default'}`}
             style={{ left: 'calc(50% + 384px)', right: 0 }}
             ref={zoneRef}
-            onMouseMove={allMessages.length > 0 ? handleMouseMove : undefined}
+            data-demo-branch-zone={tutorial ? 'true' : undefined}
+            onMouseMove={allMessages.length > 0 ? (e) => {
+              tutorial?.onBranchZoneHover?.();
+              handleMouseMove(e);
+            } : undefined}
             onMouseLeave={allMessages.length > 0 ? handleMouseLeave : undefined}
             onMouseDown={allMessages.length > 0 ? handleZoneClick : undefined}
             onWheel={e => {
@@ -1464,8 +1974,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
             }}
           />
           <div className="max-w-3xl mx-auto px-6 pt-8 pb-12 space-y-8 relative" ref={contentRef}>
-            {allMessages.map(({ msg, nodeId }, idx) => {
-              const uniqueMsgId = `${nodeId}-${idx}`;
+            {allMessages.map(({ msg, nodeId, stableMessageId, legacyMessageId }, idx) => {
+              const uniqueMsgId = stableMessageId;
               const isStreamingMessage = Boolean(
                 msg.role === 'model' &&
                 isGenerating &&
@@ -1480,6 +1990,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   key={uniqueMsgId}
                   data-node-id={nodeId}
                   data-message-id={uniqueMsgId}
+                  data-legacy-message-id={legacyMessageId}
+                  data-message-ordinal={msg.ordinal}
+                  data-message-role={msg.role}
                   className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'} group animate-in fade-in slide-in-from-bottom-2 duration-500`}
                 >
                   <div className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'} max-w-full`}>
@@ -1492,14 +2005,24 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         />
                       )}
 
-                      <div className="md-content relative z-10">
+                      <div
+                        className="md-content relative z-10"
+                        data-demo-select-source={tutorial && uniqueMsgId === `${history[0]?.id}:1` ? 'true' : undefined}
+                      >
                         <MarkdownMessage content={DOMPurify.sanitize(msg.content)} mode={mode} isUser={msg.role === 'user'} />
                       </div>
+                      {msg.role === 'model' && <CitationList citations={msg.citations} />}
                     </div>
 
                     <div className={`mt-1.5 flex items-center gap-3 opacity-40 group-hover:opacity-100 focus-within:opacity-100 transition-all ${msg.role === 'user' ? 'text-zinc-500 pr-2' : 'text-zinc-500 pl-1'}`}>
                       {msg.role === 'model' && (
-                        <button onClick={() => onBranch(nodeId)} className="flex items-center gap-1.5 hover:text-blue-400 transition-colors py-1">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onBranch(nodeId, msg.ordinal);
+                          }}
+                          className="flex items-center gap-1.5 hover:text-blue-400 transition-colors py-1"
+                        >
                           <span className="text-[10px] uppercase font-bold tracking-widest">Create new branch</span>
                           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" /></svg>
                         </button>
@@ -1529,28 +2052,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 onClose={() => closeBranch(true)}
                 composerRef={composerRef}
                 selectedModel={selectedModel}
+                availableModels={modelCatalog}
                 onModelSelect={onModelSelect}
+                webSearchEnabled={webSearchEnabled}
+                onToggleWebSearch={() => setWebSearchEnabled((prev) => !prev)}
+                thinkingEnabled={effectiveThinkingEnabled}
+                thinkingSupported={thinkingSupported}
+                thinkingLocked={thinkingLocked}
+                onToggleThinking={handleToggleThinking}
+                userTier={userTier}
+                onUpgradeRequest={onUpgradeRequest}
+                isTutorial={Boolean(tutorial)}
               />
             )}
 
-            {/* ONLY show this spinner if the request came from the main input and model hasn't started replying */}
-            {isGenerating && loadingSource === 'main' && allMessages.length > 0 &&
-              allMessages[allMessages.length - 1].msg.role === 'model' &&
-              !allMessages[allMessages.length - 1].msg.content.trim() && (
-                <div className="flex justify-start pl-0 py-2 animate-in fade-in duration-300">
-                  <div className="inline-flex items-center gap-3 rounded-2xl border border-zinc-200/60 bg-white/80 px-4 py-2 shadow-sm">
-                    <svg className="w-5 h-5 animate-spin text-blue-500 shrink-0" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                    </svg>
-                    {loadingPhrase ? (
-                      <span className="text-sm text-zinc-600/90">{loadingPhrase}</span>
-                    ) : (
-                      <span className="text-sm text-[var(--app-text-muted)]">Generating response</span>
-                    )}
-                  </div>
-                </div>
-              )}
             {/* Mini chat overlays moved inside max-w-3xl container */}
             {branchLines
               .filter(line => historyMessageIds.has(line.messageId) && line.targetNodeId !== currentNodeId)
@@ -1566,14 +2081,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     uniqueMsgId={line.messageId}
                     branchNode={branchNode}
                     isGeneratingThisNode={isGeneratingThisNode}
-                    loadingPhrase={loadingPhrase}
-                    showSmartLoading={Boolean(selectedModelConfig?.smartLoading)}
                     title={displayTitle}
+                    composerOverlapKey={activeBranch ? `${activeBranch.nodeId}:${activeBranch.y}:${activeBranch.metadata.messageId}` : null}
                     containerRef={contentRef}
                     scrollRef={scrollRef}
                     onSendMessage={
                       line.targetNodeId && onSendMessageToNode
-                        ? (text, files) => onSendMessageToNode!(line.targetNodeId!, text, files, isThinking)
+                        ? (text, files) => onSendMessageToNode!(line.targetNodeId!, text, files, effectiveThinkingEnabled, buildSendOptions())
                         : undefined
                     }
                     onGoToNode={
@@ -1582,6 +2096,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         : undefined
                     }
                     onStopGeneration={onStopGeneration}
+                    initiallyCollapsed={Boolean(tutorial?.miniChatsStartCollapsed)}
+                    onCollapsedChange={
+                      line.targetNodeId && tutorial?.onMiniChatToggle
+                        ? (collapsed) => tutorial.onMiniChatToggle?.(line.targetNodeId!, collapsed)
+                        : undefined
+                    }
+                    isTutorial={Boolean(tutorial)}
                   />
                 );
               })}
@@ -1616,8 +2137,43 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
       <div className="absolute bottom-0 left-0 right-0 pb-10 pt-32 z-30 pointer-events-none" style={{ background: 'linear-gradient(to top, var(--app-bg) 40%, transparent 100%)' }}>
         <div className="max-w-3xl mx-auto px-6 pointer-events-auto">
+          {toasts?.length && onDismissToast ? (
+            <InlineToastStack toasts={toasts} onDismiss={onDismissToast} />
+          ) : null}
 
-          <div className="flex flex-col gap-0 bg-[var(--card-bg)] border border-[var(--border-color)] rounded-[2rem] p-0.5 transition-all shadow-sm focus-within:border-zinc-400 focus-within:shadow-md">
+          <div className="relative">
+            {isBranching && !activeBranch && (
+              <div className="absolute left-4 right-4 bottom-full mb-3 flex items-center justify-between gap-3 rounded-full border border-[var(--accent-color)]/18 bg-[var(--card-bg)]/96 px-4 py-3 shadow-[0_12px_30px_rgba(15,23,42,0.08)] backdrop-blur">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-9 h-9 rounded-full bg-[var(--accent-color)]/12 text-[var(--accent-color)] flex items-center justify-center shrink-0">
+                    <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.25} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                    </svg>
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-[10px] font-black uppercase tracking-[0.24em] text-[var(--accent-color)]">
+                      Creating New Branch
+                    </div>
+                    <div className="text-[12px] text-[var(--app-text)] truncate">
+                      {branchSourceTitle ? `From ${branchSourceTitle}` : currentTitle ? `From ${currentTitle}` : 'From the current node'}
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={onCancelBranch}
+                  className="rounded-full border border-[var(--border-color)] bg-[var(--card-bg)] px-3 py-1.5 text-[11px] font-semibold text-[var(--app-text-muted)] transition-colors hover:text-[var(--app-text)]"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+
+            <div className={`flex flex-col gap-0 bg-[var(--card-bg)] border rounded-[2rem] p-0.5 transition-all shadow-sm ${isBranching && !activeBranch
+              ? 'border-[var(--accent-color)]/28 shadow-[0_12px_36px_rgba(59,130,246,0.10)]'
+              : 'border-[var(--border-color)] focus-within:border-zinc-400 focus-within:shadow-md'
+              }`}>
 
             {files.length > 0 && (
               <AttachmentPreviewStrip files={files} onRemove={removeFile} className="px-4 pt-4" />
@@ -1634,6 +2190,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               />
 
               <textarea
+                ref={composerTextareaRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onPaste={handlePaste}
@@ -1643,7 +2200,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     handleSubmit(e);
                   }
                 }}
-                placeholder="Message Klados..."
+                placeholder={isBranching && !activeBranch
+                  ? 'Continue this as a new branch...'
+                  : webSearchEnabled
+                    ? 'Search the web with Klados...'
+                    : 'Message Klados...'}
                 className="w-full bg-transparent border-none px-2 py-2 text-base font-medium focus:outline-none placeholder:text-[var(--app-text-muted)] text-[var(--app-text)] resize-none overflow-y-auto custom-scrollbar min-h-[44px]"
                 style={{ minHeight: '44px', maxHeight: '200px', height: 'auto' }}
                 rows={1}
@@ -1653,6 +2214,23 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   target.style.height = Math.min(target.scrollHeight, 200) + 'px';
                 }}
               />
+
+              {webSearchEnabled && (
+                <div className="px-2 pt-1">
+                  <div className={`flex flex-wrap items-center gap-2 rounded-2xl border px-3 py-2 text-[11px] ${resolvedWebSearchModel ? 'border-[var(--accent-color)]/20 bg-[var(--accent-color)]/6 text-[var(--app-text-muted)]' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
+                    <span className="font-semibold text-[var(--app-text)]">
+                      {resolvedWebSearchModel ? 'Live web search is on' : 'Choose a web-ready model'}
+                    </span>
+                    <span>{webSearchReadyCount} available on your plan</span>
+                    {resolvedWebSearchModel && selectedModel !== resolvedWebSearchModel.id && (
+                      <span>Routes via {resolvedWebSearchModel.name}</span>
+                    )}
+                    {resolvedWebSearchModel && selectedModel === resolvedWebSearchModel.id && (
+                      <span>Citations included</span>
+                    )}
+                  </div>
+                </div>
+              )}
 
 
 
@@ -1669,6 +2247,30 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
                     </svg>
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (webSearchReadyCount === 0) return;
+                      setWebSearchEnabled((prev) => !prev);
+                    }}
+                    disabled={webSearchReadyCount === 0}
+                    className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${webSearchEnabled ? 'bg-[var(--accent-color)]/12 text-[var(--accent-color)] border border-[var(--accent-color)]/20' : 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-200/50 border border-transparent'} disabled:opacity-40 disabled:cursor-not-allowed`}
+                    title={webSearchReadyCount === 0 ? 'No web-search-capable models available' : 'Toggle web search'}
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.6 9h16.8M3.6 15h16.8M12 3a15.3 15.3 0 010 18M12 3a15.3 15.3 0 000 18" />
+                    </svg>
+                    <span>Web</span>
+                  </button>
+
+                  <ThinkingToggleButton
+                    enabled={effectiveThinkingEnabled}
+                    supported={thinkingSupported}
+                    locked={thinkingLocked}
+                    onToggle={handleToggleThinking}
+                  />
 
                   <button
                     type="button"
@@ -1699,12 +2301,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         <div className="p-3 border-b border-[var(--border-color)] space-y-2.5">
                           <div className="flex items-center justify-between px-1">
                             <span className="text-[13px] font-semibold text-[var(--app-text)]">Models</span>
-                            <button
-                              onClick={() => window.location.href = "https://buy.stripe.com/00w9AVbsA88M9438lC1Nu01"}
-                              className="text-[10px] uppercase tracking-wider font-bold bg-blue-50 text-blue-600 border border-blue-100 px-2 py-1 rounded-lg hover:bg-blue-100 transition-colors"
-                            >
-                              Unlock All
-                            </button>
+                            <span className="rounded-full border border-[var(--border-color)] bg-[var(--sidebar-bg)] px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
+                              {webSearchEnabled ? `${webSearchReadyCount} available now` : `${modelCatalog.length} total`}
+                            </span>
                           </div>
                           <div className="relative flex items-center">
                             <svg className="absolute left-3 w-4 h-4 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
@@ -1712,45 +2311,67 @@ export const ChatView: React.FC<ChatViewProps> = ({
                               type="text"
                               value={modelSearchQuery}
                               onChange={(e) => setModelSearchQuery(e.target.value)}
-                              placeholder="Search models..."
+                              placeholder={webSearchEnabled ? 'Search web-ready models...' : 'Search models...'}
                               className="w-full bg-[var(--sidebar-bg)] border border-[var(--border-color)] text-xs text-[var(--app-text)] rounded-lg py-2 pl-9 pr-3 focus:outline-none transition-all"
                             />
                           </div>
+                          {webSearchEnabled && (
+                            <div className="rounded-2xl border border-[var(--accent-color)]/15 bg-[var(--accent-color)]/5 px-3 py-2 text-[11px] text-[var(--app-text-muted)]">
+                              Live web results are on. The picker is filtered to web-ready models, and locked Pro models stay visible so you can still discover them.
+                            </div>
+                          )}
                         </div>
 
                         <div className="flex-1 overflow-y-auto p-2 space-y-0.5 custom-scrollbar">
                           {filteredModels.length === 0 ? (
                             <div className="flex flex-col items-center justify-center h-24 text-xs text-zinc-400">
-                              <p>No models found.</p>
+                              <p>{webSearchEnabled ? 'No web-search-capable models match this filter.' : 'No models found.'}</p>
                             </div>
                           ) : (
                             filteredModels.map((model) => {
-                              const isLocked = isModelLockedForPublicLaunch(model);
+                              const isLocked = isFreeTier && model.isPremium;
 
                               return (
                                 <div
                                   key={model.id}
                                   onClick={() => {
-                                    if (isLocked) return;
+                                    if (isLocked) {
+                                      setIsModelMenuOpen(false);
+                                      onUpgradeRequest?.();
+                                      return;
+                                    }
                                     onModelSelect(model.id);
                                     setIsModelMenuOpen(false);
                                   }}
-                                  className={`group flex flex-col p-2.5 rounded-xl transition-colors ${isLocked ? 'opacity-60 cursor-not-allowed' : 'hover:bg-[var(--msg-user)] cursor-pointer'}`}
+                                  className={`group flex flex-col p-2.5 rounded-xl transition-colors ${isLocked ? 'cursor-pointer opacity-80 hover:bg-[var(--msg-user)]' : 'hover:bg-[var(--msg-user)] cursor-pointer'}`}
                                 >
                                   <div className="flex items-center justify-between">
                                     <div className="flex items-center gap-2">
                                       <span className={`font-semibold text-[13px] ${selectedModel === model.id ? 'text-[var(--app-text)]' : isLocked ? 'text-[var(--app-text-muted)]' : 'text-[var(--app-text-muted)] group-hover:text-[var(--app-text)]'}`}>
                                         {model.name}
                                       </span>
-                                      {model.isPremium && (
-                                        <div className="flex items-center gap-1 bg-blue-50 border border-blue-100 rounded text-blue-600 px-1 py-0.5">
-                                          <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L2 12L12 22L22 12L12 2Z" /></svg>
-                                          <span className="text-[9px] font-bold uppercase tracking-wider">Locked</span>
+                                      {isLocked ? (
+                                        <div className="rounded border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em] text-zinc-500">
+                                          Pro
+                                        </div>
+                                      ) : model.isFree ? (
+                                        <div className="rounded bg-sky-50 border border-sky-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em] text-sky-700">
+                                          Free
+                                        </div>
+                                      ) : null}
+                                      {model.supportsWebSearch && (
+                                        <div className="rounded bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em] text-emerald-700">
+                                          Web
                                         </div>
                                       )}
                                       {model.supportsThinkingTrace && (
                                         <div className="rounded bg-zinc-100 border border-zinc-200 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em] text-zinc-500">
                                           Trace
+                                        </div>
+                                      )}
+                                      {model.isOnlineVariant && (
+                                        <div className="rounded bg-amber-50 border border-amber-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em] text-amber-700">
+                                          Online
                                         </div>
                                       )}
                                       {selectedModel === model.id && (
@@ -1763,7 +2384,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                   </div>
                                   <p className="text-[11px] text-[var(--app-text-muted)] mt-0.5 truncate pr-4">{model.description}</p>
                                 </div>
-                              )
+                              );
                             })
                           )}
                         </div>
@@ -1784,14 +2405,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 ) : (
                   <button
                     type="submit"
-                    disabled={(!input.trim() && files.length === 0)}
-                    className={`p-2 rounded-xl transition-all ${(!input.trim() && files.length === 0) ? 'text-zinc-200 cursor-not-allowed' : 'text-white bg-blue-600 hover:bg-blue-700'} hover:scale-[1.02] active:scale-[0.98]`}
+                    disabled={(!input.trim() && files.length === 0) || (webSearchEnabled && !resolvedWebSearchModel)}
+                    className={`p-2 rounded-xl transition-all ${((!input.trim() && files.length === 0) || (webSearchEnabled && !resolvedWebSearchModel)) ? 'text-zinc-200 cursor-not-allowed' : 'text-white bg-blue-600 hover:bg-blue-700'} hover:scale-[1.02] active:scale-[0.98]`}
                   >
                     <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" /></svg>
                   </button>
                 )}
               </div>
             </form>
+            </div>
           </div>
         </div>
       </div>

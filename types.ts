@@ -1,4 +1,43 @@
 
+export interface MessageCitation {
+  type: 'url_citation';
+  url: string;
+  startIndex?: number;
+  endIndex?: number;
+  title?: string;
+  text?: string;
+}
+
+export interface ModelOption {
+  id: string;
+  name: string;
+  provider: string;
+  description: string;
+  isPremium: boolean;
+  isFree?: boolean;
+  thinkingOnly?: boolean;
+  supportsThinkingTrace?: boolean;
+  supportsWebSearch?: boolean;
+  webSearchModelId?: string | null;
+  smartLoading?: boolean;
+  contextLength?: number | null;
+  isOnlineVariant?: boolean;
+}
+
+export type WebSearchConfig = {
+  enabled?: boolean;
+  maxResults?: number;
+  engine?: 'native' | 'exa' | 'firecrawl' | 'parallel';
+};
+
+export type GenerationPhase = 'idle' | 'requesting' | 'streaming';
+
+export type GenerationStatus = {
+  phase: GenerationPhase;
+  modelId?: string | null;
+  webSearch?: boolean;
+};
+
 /**
  * Represents a single message in a conversation.
  */
@@ -7,6 +46,7 @@ export interface Message {
   role: 'user' | 'model';
   content: string;
   thinkingTrace?: string;
+  citations?: MessageCitation[];
   timestamp: number;
   ioTokens?: number;
   cost?: number;
@@ -32,6 +72,13 @@ export interface ChatNode {
   childrenIds: string[];
   isBranch: boolean;
   branchMessageId?: string | null;
+  branchBlockIndex?: number | null;
+  branchRelativeYInBlock?: number | null;
+  /**
+   * Anchor point within the parent message (0..1), used to place branch edges.
+   * Older rows may contain pixel values; those are treated as "unknown" and fall back to center.
+   */
+  branchMsgRelativeY?: number | null;
 }
 
 export interface ChatState {
@@ -43,6 +90,8 @@ export interface ChatState {
 
 export type SendMessageOptions = {
   modelId?: string;
-  contextMode?: 'inherit' | 'none';
+  contextMode?: 'inherit' | 'none' | 'selection';
   branchParentId?: string | null;
+  branchSourceOrdinal?: number | null;
+  webSearch?: WebSearchConfig;
 };
