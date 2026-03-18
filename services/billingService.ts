@@ -2,12 +2,47 @@ import { API_BASE_URL, STRIPE_PAYMENT_LINK } from './frontendConfig';
 import { supabase } from './supabaseClient';
 import { ApiRequestError } from './openRouterService';
 
-const openUpgradeFallback = () => {
+const buildUpgradeFallbackUrl = async () => {
+  const rawPaymentLink = STRIPE_PAYMENT_LINK.trim();
+  if (!rawPaymentLink) {
+    return '';
+  }
+
+  try {
+    const url = new URL(rawPaymentLink);
+    const { data: { session } } = await supabase.auth.getSession();
+    const userId = typeof session?.user?.id === 'string' ? session.user.id.trim() : '';
+    const userEmail = typeof session?.user?.email === 'string' ? session.user.email.trim() : '';
+
+    if (userId && !url.searchParams.has('client_reference_id')) {
+      url.searchParams.set('client_reference_id', userId);
+    }
+
+    if (
+      userEmail &&
+      !url.searchParams.has('locked_prefilled_email') &&
+      !url.searchParams.has('prefilled_email')
+    ) {
+      url.searchParams.set('locked_prefilled_email', userEmail);
+    }
+
+    return url.toString();
+  } catch {
+    return rawPaymentLink;
+  }
+};
+
+const openUpgradeFallback = async () => {
   if (typeof window === 'undefined' || !STRIPE_PAYMENT_LINK) {
     return false;
   }
 
-  window.open(STRIPE_PAYMENT_LINK, '_blank', 'noopener,noreferrer');
+  const paymentLink = await buildUpgradeFallbackUrl();
+  if (!paymentLink) {
+    return false;
+  }
+
+  window.open(paymentLink, '_blank', 'noopener,noreferrer');
   return true;
 };
 
@@ -79,7 +114,7 @@ export const startProCheckout = async () => {
 
   const checkoutUrl = typeof data?.url === 'string' ? data.url.trim() : '';
   if (!checkoutUrl) {
-    if (openUpgradeFallback()) {
+    if (await openUpgradeFallback()) {
       return;
     }
 
@@ -95,7 +130,7 @@ export const openProUpgrade = async () => {
   try {
     await startProCheckout();
   } catch (error) {
-    if (openUpgradeFallback()) {
+    if (await openUpgradeFallback()) {
       return;
     }
 

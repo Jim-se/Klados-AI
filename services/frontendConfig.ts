@@ -5,7 +5,7 @@
 
 const DEFAULT_PRODUCTION_API_URL = 'https://klados-server-production.up.railway.app';
 const DEFAULT_LOCAL_API_URL = 'http://localhost:3001';
-const DEFAULT_STRIPE_PAYMENT_LINK = 'https://buy.stripe.com/test_00wcN5bYu8Ky3TH0qLgA800';
+const DEFAULT_STRIPE_PAYMENT_LINK = '';
 
 const normalizeApiUrl = (value: string) => value.endsWith('/') ? value.slice(0, -1) : value;
 
